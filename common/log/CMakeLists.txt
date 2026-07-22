@@ -38,6 +38,9 @@ function(wlh_common_enable_log)
     endif()
 
     target_link_libraries(wlh_log INTERFACE wlh_log_backend)
+    target_include_directories(wlh_log_backend PUBLIC
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/include"
+    )
     target_compile_features(wlh_log_backend PUBLIC c_std_99)
     set_target_properties(wlh_log_backend PROPERTIES
         C_EXTENSIONS OFF
