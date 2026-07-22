@@ -22,20 +22,22 @@ function(wlh_common_enable_log)
         add_library(wlh_log_backend STATIC
             "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/log_backend_printf.c"
         )
-        target_compile_definitions(wlh_log INTERFACE WLH_LOG_BACKEND_PRINTF)
+        set(WLH_LOG_BACKEND_MACRO "WLH_LOG_BACKEND_PRINTF")
     elseif(WLH_LOG_BACKEND STREQUAL "EASYLOGGER")
         add_library(wlh_log_backend STATIC
             "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/log_backend_easylogger.c"
         )
-        target_compile_definitions(wlh_log INTERFACE WLH_LOG_BACKEND_EASYLOGGER)
+        set(WLH_LOG_BACKEND_MACRO "WLH_LOG_BACKEND_EASYLOGGER")
     elseif(WLH_LOG_BACKEND STREQUAL "ESP")
         add_library(wlh_log_backend STATIC
             "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/log_backend_esp.c"
         )
-        target_compile_definitions(wlh_log INTERFACE WLH_LOG_BACKEND_ESP)
+        set(WLH_LOG_BACKEND_MACRO "WLH_LOG_BACKEND_ESP")
     else()
         message(FATAL_ERROR "Unknown WLH_LOG_BACKEND: ${WLH_LOG_BACKEND}")
     endif()
+    target_compile_definitions(wlh_log_backend PUBLIC ${WLH_LOG_BACKEND_MACRO})
+    target_compile_definitions(wlh_log INTERFACE ${WLH_LOG_BACKEND_MACRO})
 
     target_link_libraries(wlh_log INTERFACE wlh_log_backend)
     target_include_directories(wlh_log_backend PUBLIC
