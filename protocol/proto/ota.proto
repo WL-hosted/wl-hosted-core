@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+enum OtaImageType {
+  OTA_IMAGE_TYPE_UNSPECIFIED = 0;
+  OTA_IMAGE_TYPE_COPROCESSOR_FIRMWARE = 1;
+}
+
+enum OtaState {
+  OTA_STATE_UNSPECIFIED = 0;
+  OTA_STATE_IDLE = 1;
+  OTA_STATE_RECEIVING = 2;
+  OTA_STATE_VERIFYING = 3;
+  OTA_STATE_READY_TO_ACTIVATE = 4;
+  OTA_STATE_FAILED = 5;
+}
+
+message OtaBeginRequest {
+  OtaImageType image_type = 1;
+  uint64 image_size = 2;
+  bytes sha256 = 3;
+  string target_version = 4;
+  string slot = 5;
+  bytes signature = 6;
+}
+
+message OtaBeginResponse {
+  uint32 transfer_id = 1;
+  uint32 stream_chunk_size = 2;
+  uint32 stream_alignment = 3;
+}
+
+message OtaFinalizeRequest {
+  uint32 transfer_id = 1;
+  uint64 bytes_sent = 2;
+}
+
+message OtaAbortRequest {
+  uint32 transfer_id = 1;
+}
+
+message OtaActivateRequest {
+  uint32 transfer_id = 1;
+  bool reboot = 2;
+}
+
+message OtaQueryResponse {
+  OtaState state = 1;
+  uint32 transfer_id = 2;
+  uint64 image_size = 3;
+  uint64 bytes_received = 4;
+  string target_version = 5;
+}
+
+message OtaProgressEvent {
+  uint32 transfer_id = 1;
+  OtaState state = 2;
+  uint64 bytes_received = 3;
+}

@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+enum IoMode {
+  IO_MODE_UNSPECIFIED = 0;
+  IO_MODE_INPUT = 1;
+  IO_MODE_OUTPUT = 2;
+  IO_MODE_OPEN_DRAIN = 3;
+}
+enum IoPull {
+  IO_PULL_UNSPECIFIED = 0;
+  IO_PULL_NONE = 1;
+  IO_PULL_UP = 2;
+  IO_PULL_DOWN = 3;
+}
+
+message IoConfigureRequest {
+  uint32 pin_id = 1;
+  IoMode mode = 2;
+  IoPull pull = 3;
+  bool initial_level = 4;
+}
+
+message IoReadRequest {
+  uint32 pin_id = 1;
+}
+
+message IoReadResponse {
+  uint32 pin_id = 1;
+  bool level = 2;
+  IoMode mode = 3;
+  IoPull pull = 4;
+}
+
+message IoWriteRequest {
+  uint32 pin_id = 1;
+  bool level = 2;
+}

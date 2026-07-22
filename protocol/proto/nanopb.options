@@ -1,0 +1,61 @@
+# Static bounds for nanopb. The runtime must still validate semantic exact lengths.
+wlh.protocol.v1.VendorStatus.detail max_size:64
+
+wlh.protocol.v1.ResourceLimits.io_pins max_count:32
+wlh.protocol.v1.HelloRequest.protocol_versions max_count:4
+wlh.protocol.v1.HelloRequest.implementation max_size:49
+wlh.protocol.v1.HelloRequest.implementation_version max_size:33
+wlh.protocol.v1.HelloRequest.checksum_modes max_count:4
+wlh.protocol.v1.HelloRequest.services max_count:24
+wlh.protocol.v1.HelloRequest.channels max_count:16
+wlh.protocol.v1.HelloResponse.implementation max_size:49
+wlh.protocol.v1.HelloResponse.implementation_version max_size:33
+wlh.protocol.v1.HelloResponse.services max_count:24
+wlh.protocol.v1.HelloResponse.channels max_count:16
+wlh.protocol.v1.HelloResponse.initial_credits max_count:16
+wlh.protocol.v1.HelloResponse.supported_checksum_modes max_count:2
+wlh.protocol.v1.Heartbeat.channels max_count:16
+
+wlh.protocol.v1.WifiScanRequest.ssid max_size:32
+wlh.protocol.v1.WifiScanRequest.bssid max_size:6
+wlh.protocol.v1.WifiNetwork.ssid max_size:32
+wlh.protocol.v1.WifiNetwork.bssid max_size:6
+wlh.protocol.v1.WifiScanResultEvent.networks max_count:8
+wlh.protocol.v1.WifiConnectRequest.ssid max_size:32
+wlh.protocol.v1.WifiConnectRequest.credential max_size:64
+wlh.protocol.v1.WifiConnectRequest.bssid max_size:6
+wlh.protocol.v1.WifiLinkInfo.ssid max_size:32
+wlh.protocol.v1.WifiLinkInfo.bssid max_size:6
+wlh.protocol.v1.WifiLinkInfo.mac max_size:6
+wlh.protocol.v1.WifiCountry.alpha2 max_size:3
+wlh.protocol.v1.WifiStartApRequest.ssid max_size:32
+wlh.protocol.v1.WifiStartApRequest.credential max_size:64
+wlh.protocol.v1.WifiApClient.mac max_size:6
+wlh.protocol.v1.WifiGetApClientsResponse.clients max_count:16
+wlh.protocol.v1.WifiApClientLeftEvent.mac max_size:6
+
+wlh.protocol.v1.BluetoothControllerInfo.public_address max_size:6
+
+wlh.protocol.v1.OtaBeginRequest.sha256 max_size:32
+wlh.protocol.v1.OtaBeginRequest.target_version max_size:33
+wlh.protocol.v1.OtaBeginRequest.slot max_size:17
+wlh.protocol.v1.OtaBeginRequest.signature max_size:512
+wlh.protocol.v1.OtaQueryResponse.target_version max_size:33
+
+wlh.protocol.v1.MemoryPoolStatistics.name max_size:25
+wlh.protocol.v1.DiagnosticsStatistics.pools max_count:16
+wlh.protocol.v1.DiagnosticsFaultEvent.summary max_size:97
+
+wlh.protocol.v1.KvReadRequest.key max_size:65
+wlh.protocol.v1.KvReadResponse.value max_size:513
+wlh.protocol.v1.KvWriteRequest.key max_size:65
+wlh.protocol.v1.KvWriteRequest.value max_size:513
+wlh.protocol.v1.KvEraseRequest.key max_size:65
+
+wlh.protocol.v1.DeviceInfoResponse.vendor max_size:33
+wlh.protocol.v1.DeviceInfoResponse.mcu_model max_size:33
+wlh.protocol.v1.DeviceInfoResponse.uid max_size:32
+wlh.protocol.v1.DeviceInfoResponse.board_profile max_size:65
+
+wlh.protocol.v1.UserMessageSendRequest.payload max_size:512
+wlh.protocol.v1.UserMessageResultEvent.payload max_size:512

@@ -1,0 +1,221 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+enum WifiInterface {
+  WIFI_INTERFACE_UNSPECIFIED = 0;
+  WIFI_INTERFACE_STA = 1;
+  WIFI_INTERFACE_AP = 2;
+}
+
+enum WifiBand {
+  WIFI_BAND_UNSPECIFIED = 0;
+  WIFI_BAND_2_4_GHZ = 1;
+  WIFI_BAND_5_GHZ = 2;
+  WIFI_BAND_6_GHZ = 3;
+}
+
+enum WifiSecurity {
+  WIFI_SECURITY_UNSPECIFIED = 0;
+  WIFI_SECURITY_OPEN = 1;
+  WIFI_SECURITY_WEP = 2;
+  WIFI_SECURITY_WPA_PSK = 3;
+  WIFI_SECURITY_WPA2_PSK = 4;
+  WIFI_SECURITY_WPA_WPA2_PSK = 5;
+  WIFI_SECURITY_WPA3_SAE = 6;
+  WIFI_SECURITY_WPA2_WPA3_PSK = 7;
+  WIFI_SECURITY_OWE = 8;
+  WIFI_SECURITY_WPA2_ENTERPRISE = 9;
+  WIFI_SECURITY_WPA3_ENTERPRISE = 10;
+}
+
+enum WifiPowerMode {
+  WIFI_POWER_MODE_UNSPECIFIED = 0;
+  WIFI_POWER_MODE_ACTIVE = 1;
+  WIFI_POWER_MODE_MIN_MODEM = 2;
+  WIFI_POWER_MODE_MAX_MODEM = 3;
+}
+
+enum WifiPhy {
+  WIFI_PHY_UNSPECIFIED = 0;
+  WIFI_PHY_11B = 1;
+  WIFI_PHY_11G = 2;
+  WIFI_PHY_11A = 3;
+  WIFI_PHY_11N = 4;
+  WIFI_PHY_11AC = 5;
+  WIFI_PHY_11AX = 6;
+}
+
+enum WifiDisconnectReason {
+  WIFI_DISCONNECT_REASON_UNSPECIFIED = 0;
+  WIFI_DISCONNECT_REASON_LOCAL_REQUEST = 1;
+  WIFI_DISCONNECT_REASON_AP_NOT_FOUND = 2;
+  WIFI_DISCONNECT_REASON_AUTH_FAILED = 3;
+  WIFI_DISCONNECT_REASON_ASSOC_FAILED = 4;
+  WIFI_DISCONNECT_REASON_HANDSHAKE_TIMEOUT = 5;
+  WIFI_DISCONNECT_REASON_BEACON_LOST = 6;
+  WIFI_DISCONNECT_REASON_PEER_DEAUTH = 7;
+  WIFI_DISCONNECT_REASON_LINK_LOST = 8;
+}
+
+message WifiInitializeRequest {
+  uint32 interface_flags = 1;
+}
+
+message WifiScanRequest {
+  uint32 scan_id = 1;
+  WifiInterface interface = 2;
+  bytes ssid = 3;
+  bytes bssid = 4;
+  bool bssid_filter_enabled = 5;
+  WifiBand band = 6;
+  uint32 channel = 7;
+  bool include_hidden = 8;
+  bool passive = 9;
+  uint32 active_min_ms = 10;
+  uint32 active_max_ms = 11;
+  uint32 passive_ms = 12;
+  uint32 max_results = 13;
+}
+
+message WifiScanCancelRequest {
+  uint32 scan_id = 1;
+}
+
+message WifiNetwork {
+  bytes ssid = 1;
+  bytes bssid = 2;
+  WifiBand band = 3;
+  uint32 channel = 4;
+  uint32 center_frequency_mhz = 5;
+  sint32 rssi_dbm = 6;
+  WifiSecurity security = 7;
+  WifiPhy phy = 8;
+  uint32 capability_flags = 9;
+}
+
+message WifiScanResultEvent {
+  uint32 scan_id = 1;
+  repeated WifiNetwork networks = 2;
+}
+
+message WifiScanCompletedEvent {
+  uint32 scan_id = 1;
+  uint32 result_count = 2;
+  bool cancelled = 3;
+  uint32 dropped_results = 4;
+}
+
+message WifiConnectRequest {
+  bytes ssid = 1;
+  bytes credential = 2;
+  WifiSecurity security = 3;
+  bytes bssid = 4;
+  bool bssid_lock = 5;
+  WifiBand band = 6;
+  uint32 channel_hint = 7;
+  uint32 timeout_ms = 8;
+  bool pmf_required = 9;
+}
+
+message WifiDisconnectRequest {
+  WifiInterface interface = 1;
+}
+
+message WifiLinkInfoRequest {
+  WifiInterface interface = 1;
+}
+
+message WifiLinkInfo {
+  WifiInterface interface = 1;
+  bool connected = 2;
+  bytes ssid = 3;
+  bytes bssid = 4;
+  WifiBand band = 5;
+  uint32 channel = 6;
+  uint32 center_frequency_mhz = 7;
+  sint32 rssi_dbm = 8;
+  WifiSecurity security = 9;
+  WifiPhy phy = 10;
+  bytes mac = 11;
+}
+
+message WifiCountry {
+  string alpha2 = 1;
+}
+
+message WifiSetCountryRequest {
+  WifiCountry country = 1;
+}
+
+message WifiSetPowerModeRequest {
+  WifiInterface interface = 1;
+  WifiPowerMode mode = 2;
+}
+
+message WifiGetPowerModeRequest {
+  WifiInterface interface = 1;
+}
+
+message WifiGetPowerModeResponse {
+  WifiPowerMode mode = 1;
+}
+
+message WifiStatisticsRequest {
+  WifiInterface interface = 1;
+}
+
+message WifiStatistics {
+  uint64 tx_packets = 1;
+  uint64 tx_bytes = 2;
+  uint64 tx_dropped = 3;
+  uint64 tx_retries = 4;
+  uint64 rx_packets = 5;
+  uint64 rx_bytes = 6;
+  uint64 rx_dropped = 7;
+  uint64 rx_errors = 8;
+  sint32 current_rssi_dbm = 9;
+}
+
+message WifiStartApRequest {
+  bytes ssid = 1;
+  bytes credential = 2;
+  WifiSecurity security = 3;
+  WifiBand band = 4;
+  uint32 channel = 5;
+  bool hidden = 6;
+  uint32 max_clients = 7;
+  uint32 beacon_interval_tu = 8;
+  bool pmf_required = 9;
+}
+
+message WifiApClient {
+  bytes mac = 1;
+  sint32 rssi_dbm = 2;
+  uint32 association_id = 3;
+}
+
+message WifiGetApClientsResponse {
+  repeated WifiApClient clients = 1;
+}
+
+message WifiConnectedEvent {
+  WifiLinkInfo link = 1;
+}
+
+message WifiDisconnectedEvent {
+  WifiInterface interface = 1;
+  WifiDisconnectReason reason = 2;
+  uint32 ieee80211_reason = 3;
+  bool locally_initiated = 4;
+}
+
+message WifiApClientJoinedEvent {
+  WifiApClient client = 1;
+}
+
+message WifiApClientLeftEvent {
+  bytes mac = 1;
+  uint32 association_id = 2;
+  uint32 ieee80211_reason = 3;
+}

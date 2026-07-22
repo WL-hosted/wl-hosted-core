@@ -1,0 +1,2 @@
+# Preserve upstream nanopb files byte-for-byte, including their whitespace.
+third_party/nanopb/** -whitespace

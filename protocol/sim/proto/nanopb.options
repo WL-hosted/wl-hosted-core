@@ -1,0 +1,11 @@
+# Test-only static bounds. Receivers must also enforce sim/spec/ipc-v1.md.
+wlh.sim.v1.SimRuntimeInfo.channels max_count:64
+wlh.sim.v1.SimRuntimeInfo.implementation max_size:49
+wlh.sim.v1.SimRuntimeInfo.implementation_version max_size:33
+wlh.sim.v1.SimFaultRequest.parameters max_size:256
+wlh.sim.v1.SimFaultResponse.detail max_size:129
+wlh.sim.v1.SimWifiScanParams.ssid max_size:32
+wlh.sim.v1.SimWifiConnectParams.ssid max_size:32
+wlh.sim.v1.SimWifiConnectParams.credential max_size:64
+wlh.sim.v1.SimWifiStartApParams.ssid max_size:32
+wlh.sim.v1.SimWifiStartApParams.credential max_size:64

@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+message AdcReadRequest {
+  uint32 pin_id = 1;
+}
+message AdcReadResponse {
+  uint32 pin_id = 1;
+  uint32 millivolts = 2;
+}

@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_ERROR = 1;
+  LOG_LEVEL_WARN = 2;
+  LOG_LEVEL_INFO = 3;
+  LOG_LEVEL_DEBUG = 4;
+  LOG_LEVEL_VERBOSE = 5;
+}
+
+message DiagnosticsPingRequest {
+  uint32 cookie = 1;
+  uint64 host_time_us = 2;
+}
+
+message DiagnosticsPingResponse {
+  uint32 cookie = 1;
+  uint64 host_time_us = 2;
+  uint64 coprocessor_uptime_us = 3;
+}
+
+message MemoryPoolStatistics {
+  string name = 1;
+  uint32 capacity = 2;
+  uint32 in_use = 3;
+  uint32 high_watermark = 4;
+  uint32 allocation_failures = 5;
+}
+
+message DiagnosticsStatistics {
+  uint64 uptime_ms = 1;
+  uint32 free_heap_bytes = 2;
+  uint32 minimum_free_heap_bytes = 3;
+  repeated MemoryPoolStatistics pools = 4;
+  uint32 reset_reason = 5;
+  uint32 assert_count = 6;
+}
+
+message DiagnosticsSetLogRequest {
+  LogLevel level = 1;
+  bool stream_enabled = 2;
+}
+
+message DiagnosticsResetRequest {
+  uint32 reason = 1;
+  uint32 delay_ms = 2;
+}
+
+message DiagnosticsFaultEvent {
+  uint32 fault_class = 1;
+  uint32 fault_code = 2;
+  string summary = 3;
+}

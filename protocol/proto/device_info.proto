@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+message DeviceInfoResponse {
+  string vendor = 1;
+  string mcu_model = 2;
+  bytes uid = 3;
+  string board_profile = 4;
+}

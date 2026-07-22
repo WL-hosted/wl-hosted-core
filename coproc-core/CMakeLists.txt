@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.20)
+project(wlh_coproc_core VERSION 0.1.0 LANGUAGES C)
+include(CTest)
+
+set(WLH_COPROC_BUILD_TESTING "${BUILD_TESTING}")
+set(BUILD_TESTING OFF)
+if(NOT TARGET wlh_protocol)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../protocol
+    ${CMAKE_CURRENT_BINARY_DIR}/protocol-build EXCLUDE_FROM_ALL)
+endif()
+if(NOT TARGET wlh_osal)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../common
+    ${CMAKE_CURRENT_BINARY_DIR}/common-build EXCLUDE_FROM_ALL)
+endif()
+set(BUILD_TESTING "${WLH_COPROC_BUILD_TESTING}")
+add_library(wlh_coproc_core STATIC src/coproc.c)
+add_library(wlh::coproc_core ALIAS wlh_coproc_core)
+target_include_directories(wlh_coproc_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_compile_features(wlh_coproc_core PUBLIC c_std_99)
+target_link_libraries(wlh_coproc_core PUBLIC
+  wlh::osal wlh::protocol wlh::protocol_nanopb)
+set_target_properties(wlh_coproc_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+  target_compile_options(wlh_coproc_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(BUILD_TESTING)
+  find_package(Threads REQUIRED)
+  wlh_common_enable_posix_osal(BUILD_TESTING OFF)
+  add_executable(wlh_coproc_core_tests tests/test_coproc.c)
+  target_compile_features(wlh_coproc_core_tests PRIVATE c_std_11)
+  target_link_libraries(wlh_coproc_core_tests PRIVATE
+    wlh_coproc_core wlh::posix_osal Threads::Threads)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(wlh_coproc_core_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+  elseif(MSVC)
+    target_compile_options(wlh_coproc_core_tests PRIVATE /UNDEBUG)
+  endif()
+  add_test(NAME wlh_coproc_core COMMAND wlh_coproc_core_tests)
+endif()

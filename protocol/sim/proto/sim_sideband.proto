@@ -1,0 +1,133 @@
+// Test-only simulator sideband schema. This is not part of WL-hosted v1.
+syntax = "proto3";
+
+package wlh.sim.v1;
+
+enum SimRole {
+  SIM_ROLE_UNSPECIFIED = 0;
+  SIM_ROLE_HOST = 1;
+  SIM_ROLE_COPROCESSOR = 2;
+  SIM_ROLE_MANAGER = 3;
+}
+
+enum SimRecordKind {
+  SIM_RECORD_KIND_UNSPECIFIED = 0;
+  SIM_RECORD_KIND_WIRE_FRAME = 1;
+  SIM_RECORD_KIND_RUNTIME_INFO = 2;
+  SIM_RECORD_KIND_FAULT_REQUEST = 3;
+  SIM_RECORD_KIND_FAULT_RESPONSE = 4;
+  SIM_RECORD_KIND_WIFI_COMMAND = 5;
+}
+
+enum SimLinkState {
+  SIM_LINK_STATE_UNSPECIFIED = 0;
+  SIM_LINK_STATE_DOWN = 1;
+  SIM_LINK_STATE_NEGOTIATING = 2;
+  SIM_LINK_STATE_UP = 3;
+  SIM_LINK_STATE_RECOVERING = 4;
+}
+
+enum SimFaultKind {
+  SIM_FAULT_KIND_UNSPECIFIED = 0;
+  SIM_FAULT_KIND_SESSION_CHANGE = 1;
+  SIM_FAULT_KIND_PEER_RESET = 2;
+  SIM_FAULT_KIND_HOST_RESET = 3;
+  SIM_FAULT_KIND_CLEAR_CREDIT = 4;
+  SIM_FAULT_KIND_CHANNEL_RESET = 5;
+  SIM_FAULT_KIND_BUFFER_OOM = 6;
+  SIM_FAULT_KIND_LIMIT_CREDIT = 7;
+  SIM_FAULT_KIND_QUEUE_STARVATION = 8;
+  SIM_FAULT_KIND_WIFI_DISCONNECT = 9;
+  SIM_FAULT_KIND_WIFI_SCAN_FAILURE = 10;
+  SIM_FAULT_KIND_RPC_TIMEOUT = 11;
+  SIM_FAULT_KIND_OTA_INTERRUPT = 12;
+}
+
+message SimChannelRuntime {
+  uint32 channel = 1;
+  uint32 tx_credit = 2;
+  uint32 rx_credit = 3;
+  uint32 queued_records = 4;
+}
+
+message SimRuntimeInfo {
+  SimRole role = 1;
+  SimLinkState link_state = 2;
+  uint32 session_id = 3;
+  uint64 uptime_ms = 4;
+  uint64 tx_frames = 5;
+  uint64 rx_frames = 6;
+  uint64 dropped_frames = 7;
+  uint32 free_buffers = 8;
+  repeated SimChannelRuntime channels = 9;
+  string implementation = 10;
+  string implementation_version = 11;
+}
+
+message SimFaultRequest {
+  // Must be nonzero and unique among outstanding requests on this connection.
+  uint32 request_id = 1;
+  SimFaultKind fault = 2;
+  uint32 channel = 3;
+  uint32 count = 4;
+  uint32 duration_ms = 5;
+  bytes parameters = 6;
+}
+
+message SimFaultResponse {
+  // Must exactly match the corresponding nonzero SimFaultRequest.request_id.
+  uint32 request_id = 1;
+  bool accepted = 2;
+  sint32 status_code = 3;
+  string detail = 4;
+}
+
+// Wi-Fi operation requested by the Manager. The Host Simulator issues the
+// corresponding standard Wi-Fi RPC over the wire; results and events are not
+// reported on the sideband — the Manager observes them on the relayed
+// WIRE_FRAME stream.
+message SimWifiScanParams {
+  uint32 scan_id = 1;
+  // Empty means a broadcast scan.
+  string ssid = 2;
+  // Zero means the receiver's default.
+  uint32 max_results = 3;
+  bool include_hidden = 4;
+}
+
+message SimWifiConnectParams {
+  string ssid = 1;
+  string credential = 2;
+  // wlh.protocol.v1.WifiSecurity value; zero means the receiver's default.
+  uint32 security = 3;
+  // Zero means the receiver's default.
+  uint32 timeout_ms = 4;
+}
+
+message SimWifiDisconnectParams {}
+
+message SimWifiStartApParams {
+  string ssid = 1;
+  // Empty means an open network.
+  string credential = 2;
+  // wlh.protocol.v1.WifiSecurity value; zero means the receiver's default.
+  uint32 security = 3;
+  // Zero means the driver picks a channel.
+  uint32 channel = 4;
+  // Zero means the driver default.
+  uint32 max_clients = 5;
+}
+
+message SimWifiStopApParams {}
+
+message SimWifiCommand {
+  // Must be nonzero and unique among outstanding commands on this connection.
+  uint32 command_id = 1;
+  oneof command {
+    SimWifiScanParams scan = 2;
+    SimWifiConnectParams connect = 3;
+    SimWifiDisconnectParams disconnect = 4;
+    SimWifiStartApParams start_ap = 5;
+    SimWifiStopApParams stop_ap = 6;
+  }
+}

@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+enum BluetoothTransport {
+  BLUETOOTH_TRANSPORT_UNSPECIFIED = 0;
+  BLUETOOTH_TRANSPORT_HCI = 1;
+}
+
+enum BluetoothControllerState {
+  BLUETOOTH_CONTROLLER_STATE_UNSPECIFIED = 0;
+  BLUETOOTH_CONTROLLER_STATE_DISABLED = 1;
+  BLUETOOTH_CONTROLLER_STATE_ENABLED = 2;
+  BLUETOOTH_CONTROLLER_STATE_ERROR = 3;
+}
+
+message BluetoothInitializeRequest {
+  BluetoothTransport transport = 1;
+  uint32 feature_flags = 2;
+}
+
+message BluetoothEnableRequest {
+  uint32 mode_flags = 1;
+}
+
+message BluetoothDeinitializeRequest {
+  bool release_memory = 1;
+}
+
+message BluetoothControllerInfo {
+  BluetoothControllerState state = 1;
+  bytes public_address = 2;
+  uint32 hci_version = 3;
+  uint32 manufacturer_id = 4;
+  uint64 feature_bits = 5;
+  uint32 max_hci_packet = 6;
+}
+
+message BluetoothStateChangedEvent {
+  BluetoothControllerState state = 1;
+  uint32 reason = 2;
+}

@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+message UserMessageSendRequest {
+  uint32 endpoint_id = 1;
+  uint32 message_type = 2;
+  uint32 flags = 3;
+  bytes payload = 4;
+}
+message UserMessageResultEvent {
+  uint32 endpoint_id = 1;
+  uint32 message_type = 2;
+  uint32 correlation_id = 3;
+  sint32 result = 4;
+  bytes payload = 5;
+}

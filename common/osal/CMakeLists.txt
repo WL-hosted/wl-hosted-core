@@ -1,0 +1,76 @@
+add_library(wlh_osal INTERFACE)
+add_library(wlh::osal ALIAS wlh_osal)
+
+target_include_directories(wlh_osal INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_compile_features(wlh_osal INTERFACE c_std_99)
+
+function(wlh_common_enable_posix_osal)
+    set(one_value_args BUILD_TESTING)
+    cmake_parse_arguments(WLH_POSIX "" "${one_value_args}" "" ${ARGN})
+
+    if(TARGET wlh_posix_osal)
+        return()
+    endif()
+
+    find_package(Threads REQUIRED)
+
+    add_library(wlh_posix_osal STATIC
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/posix_osal.c"
+    )
+    add_library(wlh::posix_osal ALIAS wlh_posix_osal)
+    target_compile_features(wlh_posix_osal PUBLIC c_std_11)
+    target_link_libraries(wlh_posix_osal PUBLIC wlh::osal Threads::Threads)
+    set_target_properties(wlh_posix_osal PROPERTIES
+        C_EXTENSIONS OFF
+        POSITION_INDEPENDENT_CODE ON
+    )
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(wlh_posix_osal PRIVATE
+            -Wall -Wextra -Wpedantic -Werror
+        )
+    endif()
+
+    if(WLH_POSIX_BUILD_TESTING)
+        add_executable(wlh_posix_osal_tests
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/tests/test_posix_osal.c"
+        )
+        target_compile_features(wlh_posix_osal_tests PRIVATE c_std_11)
+        target_link_libraries(wlh_posix_osal_tests PRIVATE wlh::posix_osal)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(wlh_posix_osal_tests PRIVATE
+                -Wall -Wextra -Wpedantic -Werror -UNDEBUG
+            )
+        elseif(MSVC)
+            target_compile_options(wlh_posix_osal_tests PRIVATE /UNDEBUG)
+        endif()
+        add_test(NAME wlh_posix_osal COMMAND wlh_posix_osal_tests)
+    endif()
+endfunction()
+
+function(wlh_common_enable_freertos_osal)
+    if(TARGET wlh_freertos_osal)
+        return()
+    endif()
+
+    add_library(wlh_freertos_osal STATIC
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/freertos_osal.c"
+    )
+    add_library(wlh::freertos_osal ALIAS wlh_freertos_osal)
+    target_compile_features(wlh_freertos_osal PUBLIC c_std_99)
+    target_link_libraries(wlh_freertos_osal PUBLIC wlh::osal)
+    set_target_properties(wlh_freertos_osal PROPERTIES
+        C_EXTENSIONS OFF
+        POSITION_INDEPENDENT_CODE ON
+    )
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        # -Wpedantic is omitted on purpose: this target only builds inside
+        # vendor SDKs (ESP-IDF) whose platform headers use GNU extensions such
+        # as #include_next, and they arrive as plain -I includes.
+        target_compile_options(wlh_freertos_osal PRIVATE
+            -Wall -Wextra -Werror
+        )
+    endif()
+endfunction()

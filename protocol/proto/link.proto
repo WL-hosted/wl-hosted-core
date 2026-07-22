@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+import "common.proto";
+
+enum ChecksumMode {
+  CHECKSUM_MODE_UNSPECIFIED = 0;
+  CHECKSUM_MODE_SUM32 = 1;
+  CHECKSUM_MODE_CRC32C = 2;
+}
+
+enum LinkState {
+  LINK_STATE_UNSPECIFIED = 0;
+  LINK_STATE_NEGOTIATING = 1;
+  LINK_STATE_HEALTHY = 2;
+  LINK_STATE_CONGESTED = 3;
+  LINK_STATE_RECOVERING = 4;
+  LINK_STATE_FAILED = 5;
+}
+
+message ChannelCapability {
+  uint32 channel_id = 1;
+  uint32 max_frame_payload = 2;
+  uint32 max_aggregate_size = 3;
+  uint32 alignment = 4;
+  uint32 feature_flags = 5;
+}
+
+message InitialCredit {
+  uint32 channel_id = 1;
+  uint32 units = 2;
+  uint32 unit_bytes = 3;
+}
+
+message IoPinCapability {
+  uint32 pin_id = 1;
+  uint32 mode_flags = 2;
+  bool adc_supported = 3;
+}
+
+message ResourceLimits {
+  uint32 max_rpc_payload = 1;
+  uint32 max_pending_rpc = 2;
+  uint32 kv_max_key_bytes = 3;
+  uint32 kv_max_value_bytes = 4;
+  uint32 kv_total_capacity = 5;
+  uint32 kv_remaining_capacity = 6;
+  uint32 user_max_rpc_payload = 7;
+  uint32 user_max_stream_message = 8;
+  repeated IoPinCapability io_pins = 9;
+}
+
+message HelloRequest {
+  repeated VersionRange protocol_versions = 1;
+  string implementation = 2;
+  string implementation_version = 3;
+  uint32 max_frame_size = 4;
+  uint32 alignment = 5;
+  repeated ChecksumMode checksum_modes = 6;
+  repeated ServiceVersionRange services = 7;
+  repeated ChannelCapability channels = 8;
+  uint64 feature_bits = 9;
+  uint32 max_rpc_payload = 10;
+  uint64 transport_feature_bits = 11;
+}
+
+message HelloResponse {
+  Version selected_protocol = 1;
+  uint32 session_id = 2;
+  uint64 boot_id = 3;
+  string implementation = 4;
+  string implementation_version = 5;
+  uint32 max_frame_size = 6;
+  uint32 alignment = 7;
+  ChecksumMode checksum_mode = 8;
+  repeated ServiceVersionRange services = 9;
+  repeated ChannelCapability channels = 10;
+  repeated InitialCredit initial_credits = 11;
+  uint64 feature_bits = 12;
+  ResourceLimits limits = 13;
+  uint64 transport_feature_bits = 14;
+  repeated ChecksumMode supported_checksum_modes = 15;
+}
+
+message CreditUpdate {
+  uint32 channel_id = 1;
+  uint32 units = 2;
+  uint32 credit_epoch = 3;
+}
+
+message ChannelWatermark {
+  uint32 channel_id = 1;
+  uint32 tx_queued = 2;
+  uint32 rx_queued = 3;
+  uint32 high_watermark = 4;
+  uint32 available_credit = 5;
+}
+
+message LinkCounters {
+  uint32 buffer_allocation_failures = 1;
+  uint32 checksum_errors = 2;
+  uint32 sequence_gaps = 3;
+  uint32 rpc_timeouts = 4;
+  uint32 peer_resets = 5;
+  uint32 transport_resets = 6;
+}
+
+message Heartbeat {
+  uint32 session_id = 1;
+  LinkState state = 2;
+  uint64 uptime_ms = 3;
+  uint64 monotonic_ms = 4;
+  repeated ChannelWatermark channels = 5;
+  LinkCounters counters = 6;
+  uint32 watchdog_state = 7;
+}
+
+message ChannelResetRequest {
+  uint32 channel_id = 1;
+  uint32 reason = 2;
+}
+
+message SessionChangedEvent {
+  uint32 old_session_id = 1;
+  uint32 new_session_id = 2;
+  uint32 reset_reason = 3;
+  uint64 boot_id = 4;
+}
