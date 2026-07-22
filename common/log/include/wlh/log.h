@@ -43,14 +43,18 @@ typedef enum wlh_log_level {
 
 #elif defined(WLH_LOG_BACKEND_PRINTF)
 
-void wlh_log_printf(wlh_log_level_t level, const char *tag, const char *fmt, ...);
+void wlh_log_printf(
+    wlh_log_level_t level, const char *tag, const char *fmt, ...
+);
 
-#define WLH_LOGA(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_ASSERT, tag, __VA_ARGS__)
+#define WLH_LOGA(tag, ...)                                                     \
+    wlh_log_printf(WLH_LOG_LEVEL_ASSERT, tag, __VA_ARGS__)
 #define WLH_LOGE(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_ERROR, tag, __VA_ARGS__)
 #define WLH_LOGW(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_WARN, tag, __VA_ARGS__)
 #define WLH_LOGI(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_INFO, tag, __VA_ARGS__)
 #define WLH_LOGD(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_DEBUG, tag, __VA_ARGS__)
-#define WLH_LOGV(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_VERBOSE, tag, __VA_ARGS__)
+#define WLH_LOGV(tag, ...)                                                     \
+    wlh_log_printf(WLH_LOG_LEVEL_VERBOSE, tag, __VA_ARGS__)
 
 #else
 
@@ -67,7 +71,7 @@ void wlh_log_printf(wlh_log_level_t level, const char *tag, const char *fmt, ...
 
 /* Optional runtime initialization. Expands to nothing when no backend is
  * selected; otherwise it is provided by the active backend source. */
-#if defined(WLH_LOG_BACKEND_EASYLOGGER) || defined(WLH_LOG_BACKEND_ESP) || \
+#if defined(WLH_LOG_BACKEND_EASYLOGGER) || defined(WLH_LOG_BACKEND_ESP) ||     \
     defined(WLH_LOG_BACKEND_PRINTF)
 void wlh_log_init(void);
 #define WLH_LOG_INIT() wlh_log_init()

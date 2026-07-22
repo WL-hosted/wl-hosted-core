@@ -24,7 +24,9 @@ static const char *level_char(wlh_log_level_t level) {
     }
 }
 
-void wlh_log_printf(wlh_log_level_t level, const char *tag, const char *fmt, ...) {
+void wlh_log_printf(
+    wlh_log_level_t level, const char *tag, const char *fmt, ...
+) {
     va_list args;
     va_start(args, fmt);
     fprintf(stderr, "[%s][%s] ", level_char(level), tag);

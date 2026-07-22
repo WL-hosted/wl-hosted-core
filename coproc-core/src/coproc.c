@@ -63,7 +63,9 @@ static const char *coproc_state_name(wlh_coproc_state_t state) {
     }
 }
 
-static void log_state_transition(wlh_coproc_state_t previous, wlh_coproc_state_t state) {
+static void log_state_transition(
+    wlh_coproc_state_t previous, wlh_coproc_state_t state
+) {
     const char *previous_name = coproc_state_name(previous);
     const char *state_name = coproc_state_name(state);
     (void)previous_name;
@@ -314,7 +316,11 @@ static wlh_coproc_result_t handle_wifi(
     switch (request->method_id) {
     case WLH_WIFI_METHOD_INITIALIZE: {
         uint32_t operation_id;
-        WLH_LOGI("wlh_coproc", "wifi initialize request %lu", (unsigned long)request->request_id);
+        WLH_LOGI(
+            "wlh_coproc",
+            "wifi initialize request %lu",
+            (unsigned long)request->request_id
+        );
         wlh_protocol_v1_WifiInitializeRequest message =
             wlh_protocol_v1_WifiInitializeRequest_init_zero;
         stream = pb_istream_from_buffer(payload, payload_size);
@@ -417,7 +423,11 @@ static wlh_coproc_result_t handle_wifi(
     }
 
     case WLH_WIFI_METHOD_DISCONNECT:
-        WLH_LOGI("wlh_coproc", "wifi disconnect request %lu", (unsigned long)request->request_id);
+        WLH_LOGI(
+            "wlh_coproc",
+            "wifi disconnect request %lu",
+            (unsigned long)request->request_id
+        );
         status =
             coproc->config.wifi.disconnect != NULL
                 ? coproc->config.wifi.disconnect(coproc->config.wifi.context)
@@ -457,7 +467,11 @@ static wlh_coproc_result_t handle_wifi(
     }
 
     case WLH_WIFI_METHOD_STOP_AP:
-        WLH_LOGI("wlh_coproc", "wifi stop_ap request %lu", (unsigned long)request->request_id);
+        WLH_LOGI(
+            "wlh_coproc",
+            "wifi stop_ap request %lu",
+            (unsigned long)request->request_id
+        );
         status = coproc->config.wifi.stop_ap != NULL
                      ? coproc->config.wifi.stop_ap(coproc->config.wifi.context)
                      : -1;

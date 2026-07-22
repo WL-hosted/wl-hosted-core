@@ -227,7 +227,9 @@ static const char *host_state_name(wlh_host_state_t state) {
     }
 }
 
-static void log_state_transition(wlh_host_state_t previous, wlh_host_state_t state) {
+static void log_state_transition(
+    wlh_host_state_t previous, wlh_host_state_t state
+) {
     const char *previous_name = host_state_name(previous);
     const char *state_name = host_state_name(state);
     (void)previous_name;
@@ -307,7 +309,9 @@ static wlh_host_result_t send_payload_frame(
         host->config.buffers.alloc(host->config.buffers.context, frame_size);
     if (frame == NULL) {
         host->diagnostics.buffer_allocation_failures++;
-        WLH_LOGW("wlh_host", "frame buffer allocation failed (%zu bytes)", frame_size);
+        WLH_LOGW(
+            "wlh_host", "frame buffer allocation failed (%zu bytes)", frame_size
+        );
         return WLH_HOST_NO_MEMORY;
     }
     wlh_frame_header_init(&header, channel);
@@ -475,7 +479,9 @@ static wlh_host_result_t handle_hello_response(
     }
     host->session_id = hello.session_id;
     host->diagnostics.session_id = hello.session_id;
-    WLH_LOGI("wlh_host", "negotiated session %lu", (unsigned long)hello.session_id);
+    WLH_LOGI(
+        "wlh_host", "negotiated session %lu", (unsigned long)hello.session_id
+    );
     memset(host->tx_credit, 0, sizeof(host->tx_credit));
     for (index = 0; index < hello.initial_credits_count; ++index) {
         if (hello.initial_credits[index].channel_id < WLH_HOST_CHANNEL_COUNT) {
