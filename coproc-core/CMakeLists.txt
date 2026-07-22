@@ -18,7 +18,7 @@ add_library(wlh::coproc_core ALIAS wlh_coproc_core)
 target_include_directories(wlh_coproc_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_features(wlh_coproc_core PUBLIC c_std_99)
 target_link_libraries(wlh_coproc_core PUBLIC
-  wlh::osal wlh::protocol wlh::protocol_nanopb)
+  wlh::osal wlh::protocol wlh::protocol_nanopb wlh::log)
 set_target_properties(wlh_coproc_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(wlh_coproc_core PRIVATE -Wall -Wextra -Wpedantic -Werror)

@@ -1,4 +1,5 @@
 #include "wlh/host.h"
+#include "wlh/log.h"
 
 #include <limits.h>
 #include <string.h>
@@ -126,6 +127,7 @@ static void dispatch_event(
     );
     if (task == NULL) {
         host->diagnostics.buffer_allocation_failures++;
+        WLH_LOGW("wlh_host", "event buffer allocation failed");
         return;
     }
     memset(task, 0, sizeof(*task));
@@ -170,6 +172,7 @@ static void dispatch_completion(
     );
     if (task == NULL) {
         host->diagnostics.buffer_allocation_failures++;
+        WLH_LOGW("wlh_host", "completion buffer allocation failed");
         completion(
             context, WLH_HOST_NO_MEMORY, 0u, WLH_STATUS_NO_MEMORY, NULL, 0u
         );
@@ -199,12 +202,48 @@ static void dispatch_completion(
     }
 }
 
+static const char *host_state_name(wlh_host_state_t state) {
+    switch (state) {
+    case WLH_HOST_STATE_UNINITIALIZED:
+        return "UNINITIALIZED";
+    case WLH_HOST_STATE_TRANSPORT_STARTING:
+        return "TRANSPORT_STARTING";
+    case WLH_HOST_STATE_WAITING_FOR_PEER:
+        return "WAITING_FOR_PEER";
+    case WLH_HOST_STATE_NEGOTIATING:
+        return "NEGOTIATING";
+    case WLH_HOST_STATE_READY:
+        return "READY";
+    case WLH_HOST_STATE_CONGESTED:
+        return "CONGESTED";
+    case WLH_HOST_STATE_RECOVERING:
+        return "RECOVERING";
+    case WLH_HOST_STATE_FAILED:
+        return "FAILED";
+    case WLH_HOST_STATE_STOPPING:
+        return "STOPPING";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void log_state_transition(wlh_host_state_t previous, wlh_host_state_t state) {
+    const char *previous_name = host_state_name(previous);
+    const char *state_name = host_state_name(state);
+    (void)previous_name;
+    (void)state_name;
+    WLH_LOGI("wlh_host", "state %s -> %s", previous_name, state_name);
+}
+
 static void set_state(wlh_host_t *host, wlh_host_state_t state) {
+    wlh_host_state_t previous;
     if (host->state == state) {
         return;
     }
+    previous = host->state;
     host->state = state;
     host->diagnostics.state = state;
+    log_state_transition(previous, state);
     dispatch_event(host, WLH_HOST_EVENT_STATE_CHANGED, 0u, 0u, NULL, 0u);
 }
 
@@ -261,12 +300,14 @@ static wlh_host_result_t send_payload_frame(
     }
     if (!reserved && host->tx_credit[channel] == 0u) {
         set_state(host, WLH_HOST_STATE_CONGESTED);
+        WLH_LOGW("wlh_host", "no credit on channel %u", (unsigned)channel);
         return WLH_HOST_NO_CREDIT;
     }
     frame =
         host->config.buffers.alloc(host->config.buffers.context, frame_size);
     if (frame == NULL) {
         host->diagnostics.buffer_allocation_failures++;
+        WLH_LOGW("wlh_host", "frame buffer allocation failed (%zu bytes)", frame_size);
         return WLH_HOST_NO_MEMORY;
     }
     wlh_frame_header_init(&header, channel);
@@ -434,6 +475,7 @@ static wlh_host_result_t handle_hello_response(
     }
     host->session_id = hello.session_id;
     host->diagnostics.session_id = hello.session_id;
+    WLH_LOGI("wlh_host", "negotiated session %lu", (unsigned long)hello.session_id);
     memset(host->tx_credit, 0, sizeof(host->tx_credit));
     for (index = 0; index < hello.initial_credits_count; ++index) {
         if (hello.initial_credits[index].channel_id < WLH_HOST_CHANNEL_COUNT) {
@@ -484,6 +526,12 @@ static void handle_link_event(
             changed.new_session_id != 0u &&
             changed.new_session_id != host->session_id) {
             host->diagnostics.peer_resets++;
+            WLH_LOGW(
+                "wlh_host",
+                "peer requested session change %lu -> %lu",
+                (unsigned long)host->session_id,
+                (unsigned long)changed.new_session_id
+            );
             cancel_pending(host, WLH_HOST_SESSION_CHANGED);
             host->session_id = 0u;
             memset(host->tx_credit, 0, sizeof(host->tx_credit));
@@ -796,6 +844,13 @@ static wlh_host_result_t host_process_deadlines(wlh_host_t *host) {
         if (pending.active && current >= pending.deadline_ms) {
             memset(&host->pending[index], 0, sizeof(host->pending[index]));
             host->diagnostics.rpc_timeouts++;
+            WLH_LOGW(
+                "wlh_host",
+                "RPC timeout service=%u method=%u request=%lu",
+                (unsigned)pending.service_id,
+                (unsigned)pending.method_id,
+                (unsigned long)pending.request_id
+            );
             dispatch_completion(
                 host,
                 pending.completion,
@@ -812,6 +867,7 @@ static wlh_host_result_t host_process_deadlines(wlh_host_t *host) {
         host->config.heartbeat_timeout_ms != 0u &&
         current - host->diagnostics.last_peer_activity_ms >=
             host->config.heartbeat_timeout_ms) {
+        WLH_LOGW("wlh_host", "heartbeat timeout, recovering");
         cancel_pending(host, WLH_HOST_TIMEOUT);
         process_transport_lost(host);
         return WLH_HOST_TIMEOUT;
@@ -871,12 +927,19 @@ static wlh_host_result_t process_frame(
     if (wire != WLH_WIRE_OK) {
         host->diagnostics.checksum_errors +=
             wire == WLH_WIRE_CHECKSUM_MISMATCH ? 1u : 0u;
+        WLH_LOGW("wlh_host", "frame decode error %d", (int)wire);
         dispatch_event(host, WLH_HOST_EVENT_PROTOCOL_FAULT, 0u, 0u, NULL, 0u);
         return WLH_HOST_PROTOCOL_ERROR;
     }
 
     if (host->session_id != 0u && header.session_id != host->session_id) {
         host->diagnostics.peer_resets++;
+        WLH_LOGW(
+            "wlh_host",
+            "session mismatch (expected %lu, got %lu), recovering",
+            (unsigned long)host->session_id,
+            (unsigned long)header.session_id
+        );
         cancel_pending(host, WLH_HOST_SESSION_CHANGED);
         host->session_id = 0u;
         set_state(host, WLH_HOST_STATE_RECOVERING);
@@ -887,6 +950,13 @@ static wlh_host_result_t process_frame(
     if (host->rx_sequence_valid[header.channel] &&
         header.sequence != host->expected_rx_sequence[header.channel]) {
         host->diagnostics.sequence_gaps++;
+        WLH_LOGW(
+            "wlh_host",
+            "sequence gap on channel %u: expected %lu, got %lu",
+            (unsigned)header.channel,
+            (unsigned long)host->expected_rx_sequence[header.channel],
+            (unsigned long)header.sequence
+        );
     }
     host->expected_rx_sequence[header.channel] = header.sequence + 1u;
     host->rx_sequence_valid[header.channel] = true;

@@ -25,6 +25,7 @@ target_link_libraries(wlh_host_core PUBLIC
     wlh::osal
     wlh::protocol
     wlh::protocol_nanopb
+    wlh::log
 )
 set_target_properties(wlh_host_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

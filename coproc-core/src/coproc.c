@@ -1,4 +1,5 @@
 #include "wlh/coproc.h"
+#include "wlh/log.h"
 
 #include <limits.h>
 #include <string.h>
@@ -45,6 +46,42 @@ _Static_assert(
     "coprocessor queue slot too small"
 );
 
+static const char *coproc_state_name(wlh_coproc_state_t state) {
+    switch (state) {
+    case WLH_COPROC_STATE_STOPPED:
+        return "STOPPED";
+    case WLH_COPROC_STATE_WAITING_FOR_HELLO:
+        return "WAITING_FOR_HELLO";
+    case WLH_COPROC_STATE_READY:
+        return "READY";
+    case WLH_COPROC_STATE_CONGESTED:
+        return "CONGESTED";
+    case WLH_COPROC_STATE_FAILED:
+        return "FAILED";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void log_state_transition(wlh_coproc_state_t previous, wlh_coproc_state_t state) {
+    const char *previous_name = coproc_state_name(previous);
+    const char *state_name = coproc_state_name(state);
+    (void)previous_name;
+    (void)state_name;
+    WLH_LOGI("wlh_coproc", "state %s -> %s", previous_name, state_name);
+}
+
+static void set_state(wlh_coproc_t *coproc, wlh_coproc_state_t state) {
+    wlh_coproc_state_t previous;
+    if (coproc->state == state) {
+        return;
+    }
+    previous = coproc->state;
+    coproc->state = state;
+    coproc->diagnostics.state = state;
+    log_state_transition(previous, state);
+}
+
 static uint64_t now_ms(const wlh_coproc_t *coproc) {
     return coproc->config.osal.monotonic_time_ms(coproc->config.osal.context);
 }
@@ -90,7 +127,8 @@ static wlh_coproc_result_t send_payload(
     }
     if (channel != WLH_CHANNEL_LINK_CONTROL &&
         coproc->tx_credit[channel] == 0u) {
-        coproc->state = WLH_COPROC_STATE_CONGESTED;
+        set_state(coproc, WLH_COPROC_STATE_CONGESTED);
+        WLH_LOGW("wlh_coproc", "no credit on channel %u", (unsigned)channel);
         return WLH_COPROC_NO_CREDIT;
     }
 
@@ -238,7 +276,12 @@ static wlh_coproc_result_t send_hello_response(
     );
     if (result == WLH_COPROC_OK) {
         coproc->session_id = selected_session;
-        coproc->state = WLH_COPROC_STATE_READY;
+        WLH_LOGI(
+            "wlh_coproc",
+            "negotiated session %lu",
+            (unsigned long)selected_session
+        );
+        set_state(coproc, WLH_COPROC_STATE_READY);
     }
     return result;
 }
@@ -271,6 +314,7 @@ static wlh_coproc_result_t handle_wifi(
     switch (request->method_id) {
     case WLH_WIFI_METHOD_INITIALIZE: {
         uint32_t operation_id;
+        WLH_LOGI("wlh_coproc", "wifi initialize request %lu", (unsigned long)request->request_id);
         wlh_protocol_v1_WifiInitializeRequest message =
             wlh_protocol_v1_WifiInitializeRequest_init_zero;
         stream = pb_istream_from_buffer(payload, payload_size);
@@ -323,6 +367,12 @@ static wlh_coproc_result_t handle_wifi(
             )) {
             return WLH_COPROC_PROTOCOL_ERROR;
         }
+        WLH_LOGI(
+            "wlh_coproc",
+            "wifi scan start request %lu scan_id=%lu",
+            (unsigned long)request->request_id,
+            (unsigned long)message.scan_id
+        );
         status = coproc->config.wifi.scan != NULL
                      ? coproc->config.wifi.scan(
                            coproc->config.wifi.context, message.scan_id
@@ -351,7 +401,13 @@ static wlh_coproc_result_t handle_wifi(
             connect.credential_size
         );
         connect.security = (uint32_t)message.security;
-
+        WLH_LOGI(
+            "wlh_coproc",
+            "wifi connect request %lu ssid_size=%zu security=%lu",
+            (unsigned long)request->request_id,
+            connect.ssid_size,
+            (unsigned long)connect.security
+        );
         status = coproc->config.wifi.connect != NULL
                      ? coproc->config.wifi.connect(
                            coproc->config.wifi.context, &connect
@@ -361,6 +417,7 @@ static wlh_coproc_result_t handle_wifi(
     }
 
     case WLH_WIFI_METHOD_DISCONNECT:
+        WLH_LOGI("wlh_coproc", "wifi disconnect request %lu", (unsigned long)request->request_id);
         status =
             coproc->config.wifi.disconnect != NULL
                 ? coproc->config.wifi.disconnect(coproc->config.wifi.context)
@@ -385,7 +442,13 @@ static wlh_coproc_result_t handle_wifi(
         ap.security = (uint32_t)message.security;
         ap.channel = message.channel;
         ap.max_clients = message.max_clients;
-
+        WLH_LOGI(
+            "wlh_coproc",
+            "wifi start_ap request %lu channel=%lu max_clients=%lu",
+            (unsigned long)request->request_id,
+            (unsigned long)ap.channel,
+            (unsigned long)ap.max_clients
+        );
         status =
             coproc->config.wifi.start_ap != NULL
                 ? coproc->config.wifi.start_ap(coproc->config.wifi.context, &ap)
@@ -394,6 +457,7 @@ static wlh_coproc_result_t handle_wifi(
     }
 
     case WLH_WIFI_METHOD_STOP_AP:
+        WLH_LOGI("wlh_coproc", "wifi stop_ap request %lu", (unsigned long)request->request_id);
         status = coproc->config.wifi.stop_ap != NULL
                      ? coproc->config.wifi.stop_ap(coproc->config.wifi.context)
                      : -1;
@@ -452,7 +516,7 @@ static wlh_coproc_result_t handle_rpc(
         }
         coproc->tx_credit[update.channel_id] += update.units;
         if (coproc->state == WLH_COPROC_STATE_CONGESTED) {
-            coproc->state = WLH_COPROC_STATE_READY;
+            set_state(coproc, WLH_COPROC_STATE_READY);
         }
         return request.kind == WLH_RPC_KIND_REQUEST
                    ? send_status(coproc, &request, 0)
@@ -697,10 +761,9 @@ static void coproc_worker(void *argument) {
     (void)coproc->config.osal.mutex_lock(
         coproc->config.osal.context, &coproc->state_mutex, WLH_OSAL_WAIT_FOREVER
     );
-    coproc->state = WLH_COPROC_STATE_WAITING_FOR_HELLO;
+    set_state(coproc, WLH_COPROC_STATE_WAITING_FOR_HELLO);
     coproc->started_ms = now_ms(coproc);
     coproc->last_heartbeat_ms = coproc->started_ms;
-    coproc->diagnostics.state = coproc->state;
     coproc->config.osal.mutex_unlock(
         coproc->config.osal.context, &coproc->state_mutex
     );
@@ -785,8 +848,8 @@ static void coproc_worker(void *argument) {
                     coproc->config.buffers.context, (uint8_t *)data
                 );
             } else if (job.kind == COPROC_JOB_TRANSPORT_FAILED) {
-                coproc->state = WLH_COPROC_STATE_FAILED;
-                coproc->diagnostics.state = coproc->state;
+                WLH_LOGW("wlh_coproc", "transport failed");
+                set_state(coproc, WLH_COPROC_STATE_FAILED);
             }
             coproc->config.osal.mutex_unlock(
                 coproc->config.osal.context, &coproc->state_mutex
@@ -797,9 +860,8 @@ static void coproc_worker(void *argument) {
     (void)coproc->config.osal.mutex_lock(
         coproc->config.osal.context, &coproc->state_mutex, WLH_OSAL_WAIT_FOREVER
     );
-    coproc->state = WLH_COPROC_STATE_STOPPED;
+    set_state(coproc, WLH_COPROC_STATE_STOPPED);
     coproc->session_id = 0u;
-    coproc->diagnostics.state = coproc->state;
     coproc->config.osal.mutex_unlock(
         coproc->config.osal.context, &coproc->state_mutex
     );
@@ -984,12 +1046,20 @@ static wlh_coproc_result_t process_frame(
         if (wire == WLH_WIRE_CHECKSUM_MISMATCH) {
             ++coproc->diagnostics.checksum_errors;
         }
+        WLH_LOGW("wlh_coproc", "frame decode error %d", (int)wire);
         return WLH_COPROC_PROTOCOL_ERROR;
     }
 
     if (coproc->rx_sequence_valid[header.channel] &&
         header.sequence != coproc->rx_sequence[header.channel]) {
         ++coproc->diagnostics.sequence_gaps;
+        WLH_LOGW(
+            "wlh_coproc",
+            "sequence gap on channel %u: expected %lu, got %lu",
+            (unsigned)header.channel,
+            (unsigned long)coproc->rx_sequence[header.channel],
+            (unsigned long)header.sequence
+        );
     }
     coproc->rx_sequence[header.channel] = header.sequence + 1u;
     coproc->rx_sequence_valid[header.channel] = true;
@@ -1425,8 +1495,7 @@ void wlh_coproc_test_reset_session(wlh_coproc_t *coproc, uint32_t reason) {
 
         ++coproc->diagnostics.peer_resets;
         coproc->session_id = 0u;
-        coproc->state = WLH_COPROC_STATE_WAITING_FOR_HELLO;
-        coproc->diagnostics.state = coproc->state;
+        set_state(coproc, WLH_COPROC_STATE_WAITING_FOR_HELLO);
         coproc->config.osal.mutex_unlock(
             coproc->config.osal.context, &coproc->state_mutex
         );
