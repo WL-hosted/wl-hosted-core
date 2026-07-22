@@ -17,6 +17,12 @@ typedef enum wlh_log_level {
     WLH_LOG_LEVEL_VERBOSE
 } wlh_log_level_t;
 
+/* Compile-time log level threshold. Platforms may override this via a compile
+ * definition (e.g. -DWLH_LOG_LEVEL=WLH_LOG_LEVEL_INFO). */
+#ifndef WLH_LOG_LEVEL
+#define WLH_LOG_LEVEL WLH_LOG_LEVEL_DEBUG
+#endif
+
 /* Backend selection is performed by the build system via one of the
  * WLH_LOG_BACKEND_* compile definitions. */
 #if defined(WLH_LOG_BACKEND_EASYLOGGER)
@@ -48,13 +54,35 @@ void wlh_log_printf(
 );
 
 #define WLH_LOGA(tag, ...)                                                     \
-    wlh_log_printf(WLH_LOG_LEVEL_ASSERT, tag, __VA_ARGS__)
-#define WLH_LOGE(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_ERROR, tag, __VA_ARGS__)
-#define WLH_LOGW(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_WARN, tag, __VA_ARGS__)
-#define WLH_LOGI(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_INFO, tag, __VA_ARGS__)
-#define WLH_LOGD(tag, ...) wlh_log_printf(WLH_LOG_LEVEL_DEBUG, tag, __VA_ARGS__)
+    do {                                                                       \
+        if (WLH_LOG_LEVEL >= WLH_LOG_LEVEL_ASSERT)                             \
+            wlh_log_printf(WLH_LOG_LEVEL_ASSERT, tag, __VA_ARGS__);            \
+    } while (0)
+#define WLH_LOGE(tag, ...)                                                     \
+    do {                                                                       \
+        if (WLH_LOG_LEVEL >= WLH_LOG_LEVEL_ERROR)                              \
+            wlh_log_printf(WLH_LOG_LEVEL_ERROR, tag, __VA_ARGS__);             \
+    } while (0)
+#define WLH_LOGW(tag, ...)                                                     \
+    do {                                                                       \
+        if (WLH_LOG_LEVEL >= WLH_LOG_LEVEL_WARN)                               \
+            wlh_log_printf(WLH_LOG_LEVEL_WARN, tag, __VA_ARGS__);              \
+    } while (0)
+#define WLH_LOGI(tag, ...)                                                     \
+    do {                                                                       \
+        if (WLH_LOG_LEVEL >= WLH_LOG_LEVEL_INFO)                               \
+            wlh_log_printf(WLH_LOG_LEVEL_INFO, tag, __VA_ARGS__);              \
+    } while (0)
+#define WLH_LOGD(tag, ...)                                                     \
+    do {                                                                       \
+        if (WLH_LOG_LEVEL >= WLH_LOG_LEVEL_DEBUG)                              \
+            wlh_log_printf(WLH_LOG_LEVEL_DEBUG, tag, __VA_ARGS__);             \
+    } while (0)
 #define WLH_LOGV(tag, ...)                                                     \
-    wlh_log_printf(WLH_LOG_LEVEL_VERBOSE, tag, __VA_ARGS__)
+    do {                                                                       \
+        if (WLH_LOG_LEVEL >= WLH_LOG_LEVEL_VERBOSE)                            \
+            wlh_log_printf(WLH_LOG_LEVEL_VERBOSE, tag, __VA_ARGS__);           \
+    } while (0)
 
 #else
 
