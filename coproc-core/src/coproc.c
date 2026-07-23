@@ -1492,6 +1492,9 @@ wlh_coproc_result_t wlh_coproc_wifi_connected(
     event.link.bssid.size = 6u;
     memcpy(event.link.bssid.bytes, bss->bssid, 6u);
 
+    event.link.mac.size = 6u;
+    memcpy(event.link.mac.bytes, bss->interface_mac, 6u);
+
     event.link.channel = bss->channel;
     event.link.rssi_dbm = bss->rssi_dbm;
     event.link.security = (wlh_protocol_v1_WifiSecurity)bss->security;

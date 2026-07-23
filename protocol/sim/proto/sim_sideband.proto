@@ -17,6 +17,8 @@ enum SimRecordKind {
   SIM_RECORD_KIND_FAULT_REQUEST = 3;
   SIM_RECORD_KIND_FAULT_RESPONSE = 4;
   SIM_RECORD_KIND_WIFI_COMMAND = 5;
+  SIM_RECORD_KIND_PING_COMMAND = 6;
+  SIM_RECORD_KIND_PING_RESULT = 7;
 }
 
 enum SimLinkState {
@@ -130,4 +132,21 @@ message SimWifiCommand {
     SimWifiStartApParams start_ap = 5;
     SimWifiStopApParams stop_ap = 6;
   }
+}
+
+message SimPingCommand {
+  uint32 request_id = 1;
+  string hostname = 2;
+  uint32 count = 3;
+  uint32 timeout_ms = 4;
+}
+
+message SimPingResult {
+  uint32 request_id = 1;
+  string hostname = 2;
+  string address = 3;
+  uint32 transmitted = 4;
+  uint32 received = 5;
+  bool success = 6;
+  string detail = 7;
 }

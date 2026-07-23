@@ -22,7 +22,7 @@ Each Unix-socket peer sends exactly one 16-byte Hello before any record:
 `max_record_size` must be in `8..1048584` (8-byte record header plus at most a
 1 MiB payload). The effective limit is the smaller value advertised by the two
 peers. An invalid magic, version, role, flags value, or size closes the
-connection. Sideband records (kinds 2..5) are enabled only when one peer is the
+connection. Sideband records (kinds 2..7) are enabled only when one peer is the
 Manager and both peers set `SIDEBAND`. Direct Host/Coprocessor connections send
 only kind 1 even if both advertise the flag.
 
@@ -33,7 +33,7 @@ Every record has an 8-byte header followed by `payload_len` bytes:
 | Offset | Size | Field | Rule |
 |---:|---:|---|---|
 | 0 | 4 | `record_len` | bytes from `kind` through payload; exactly `4 + payload_len` |
-| 4 | 1 | `kind` | one of 1..5 below |
+| 4 | 1 | `kind` | one of 1..7 below |
 | 5 | 1 | `flags` | zero in v1 |
 | 6 | 2 | `reserved` | zero |
 | 8 | N | `payload` | exactly `record_len - 4` bytes |
@@ -51,6 +51,8 @@ records are protocol errors.
 | 3 | `FAULT_REQUEST` | `wlh.sim.v1.SimFaultRequest` protobuf |
 | 4 | `FAULT_RESPONSE` | `wlh.sim.v1.SimFaultResponse` protobuf |
 | 5 | `WIFI_COMMAND` | `wlh.sim.v1.SimWifiCommand` protobuf |
+| 6 | `PING_COMMAND` | `wlh.sim.v1.SimPingCommand` protobuf |
+| 7 | `PING_RESULT` | `wlh.sim.v1.SimPingResult` protobuf |
 
 Without fault injection, a Manager must forward the bytes of `WIRE_FRAME`
 unchanged. Sideband records never consume standard channel credit and never
@@ -64,6 +66,11 @@ relays. When the peer on the other side of the relay is a real transport
 (e.g. a USB link to firmware instead of a Coprocessor Simulator socket), the
 Manager still relays `WIRE_FRAME` payloads byte-unchanged to and from that
 transport; only the encapsulation differs.
+
+`PING_COMMAND` flows Manager to Host Simulator only and requests a diagnostic
+ICMP Echo operation through the Host Simulator's network stack. Exactly one
+matching `PING_RESULT` flows back to the Manager. These records are test-only
+and never cross the standard wire transport.
 
 ## Protobuf semantics and bounds
 
@@ -87,6 +94,13 @@ bounds are in `sim/proto/nanopb.options`. Receivers must additionally enforce:
   bytes, matching the standard Wi-Fi schema bounds. `security` carries a
   `wlh.protocol.v1.WifiSecurity` value; zero selects the receiver's default.
   Exactly one `command` alternative must be set.
+- `SimPingCommand.request_id` is nonzero and unique among outstanding ping
+  requests. `hostname` is 1..253 UTF-8 bytes, `count` is 1..10, and
+  `timeout_ms` is 1..60000.
+- `SimPingResult.request_id` exactly matches one outstanding request.
+  `hostname` is at most 253 UTF-8 bytes, `address` is at most 46 bytes, and
+  `detail` is at most 128 UTF-8 bytes. `success=true` requires `received > 0`
+  and `received <= transmitted`.
 
 Protobuf unknown fields may be skipped for forward compatibility, but the
 decoded known-field bounds and all semantics above remain mandatory.

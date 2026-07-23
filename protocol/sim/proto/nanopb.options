@@ -9,3 +9,7 @@ wlh.sim.v1.SimWifiConnectParams.ssid max_size:32
 wlh.sim.v1.SimWifiConnectParams.credential max_size:64
 wlh.sim.v1.SimWifiStartApParams.ssid max_size:32
 wlh.sim.v1.SimWifiStartApParams.credential max_size:64
+wlh.sim.v1.SimPingCommand.hostname max_size:254
+wlh.sim.v1.SimPingResult.hostname max_size:254
+wlh.sim.v1.SimPingResult.address max_size:47
+wlh.sim.v1.SimPingResult.detail max_size:129

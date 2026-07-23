@@ -850,6 +850,48 @@ static void test_softap(void) {
         );
     }
 
+    /* Connected ingress includes the STA interface MAC for Host networking. */
+    sent_before = f.sent_count;
+    {
+        static const uint8_t ssid[] = "wlh-link";
+        static const uint8_t bssid[6] = {0x02, 0, 0, 0, 0, 2};
+        static const uint8_t interface_mac[6] = {
+            0x24, 0x6f, 0x28, 0xaa, 0xbb, 0xcc
+        };
+        wlh_coproc_bss_t bss;
+        wlh_protocol_v1_WifiConnectedEvent event =
+            wlh_protocol_v1_WifiConnectedEvent_init_zero;
+
+        memset(&bss, 0, sizeof(bss));
+        bss.ssid = ssid;
+        bss.ssid_size = sizeof(ssid) - 1u;
+        memcpy(bss.bssid, bssid, sizeof(bssid));
+        memcpy(bss.interface_mac, interface_mac, sizeof(bss.interface_mac));
+        bss.security =
+            (uint32_t)wlh_protocol_v1_WifiSecurity_WIFI_SECURITY_WPA2_PSK;
+        bss.channel = 6u;
+        bss.rssi_dbm = -40;
+
+        CHECK(wlh_coproc_wifi_connected(&core, &bss) == WLH_COPROC_OK);
+        wait_for_sent(&f, sent_before + 1u);
+        decode_last_sent(&f, &rpc, &rpc_payload, &rpc_payload_size);
+        CHECK(
+            rpc.service_id == WLH_SERVICE_WIFI &&
+            rpc.method_id == WLH_WIFI_EVENT_CONNECTED &&
+            rpc.kind == WLH_RPC_KIND_EVENT
+        );
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        CHECK(pb_decode(
+            &stream, wlh_protocol_v1_WifiConnectedEvent_fields, &event
+        ));
+        CHECK(
+            event.has_link && event.link.mac.size == sizeof(interface_mac) &&
+            memcmp(
+                event.link.mac.bytes, interface_mac, sizeof(interface_mac)
+            ) == 0
+        );
+    }
+
     /* AP client joined ingress emits a WIFI event. */
     sent_before = f.sent_count;
     {

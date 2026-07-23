@@ -210,6 +210,7 @@ typedef struct wlh_coproc_bss {
     const uint8_t *ssid;
     size_t ssid_size;
     uint8_t bssid[6];
+    uint8_t interface_mac[6];
     uint32_t security;
     uint32_t channel;
     int32_t rssi_dbm;
