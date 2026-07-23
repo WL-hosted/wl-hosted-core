@@ -426,7 +426,9 @@ static WLH_NOINLINE wlh_coproc_result_t handle_wifi(
         coproc->wifi_initialize_pending.request_id = request->request_id;
         status = coproc->config.wifi.initialize != NULL
                      ? coproc->config.wifi.initialize(
-                           coproc->config.wifi.context, operation_id
+                           coproc->config.wifi.context,
+                           operation_id,
+                           message.interface_flags
                        )
                      : -1;
         if (status != 0) {

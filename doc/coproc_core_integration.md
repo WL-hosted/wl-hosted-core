@@ -117,10 +117,13 @@ sequenceDiagram
 ### initialize
 
 ```c
-int my_wifi_initialize(void *context, uint32_t operation_id);
+int my_wifi_initialize(
+    void *context, uint32_t operation_id, uint32_t interface_flags
+);
 ```
 
-- 收到后应尽快启动厂商 Wi-Fi 初始化。
+- `interface_flags` 是 Host 在 `WifiInitializeRequest` 中声明的接口 bitmap：bit0 表示 STA，bit1 表示 AP。
+- 收到后应尽快启动厂商 Wi-Fi 初始化，并按 `interface_flags` 启用对应的 STA/AP 接口。
 - 初始化完成后调用 `wlh_coproc_wifi_initialized(coproc, operation_id, backend_status)`。
 - `backend_status` 为 0 表示成功；非 0 会映射为错误响应。
 

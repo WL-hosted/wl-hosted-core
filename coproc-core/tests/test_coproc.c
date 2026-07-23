@@ -99,9 +99,12 @@ static void ethernet_rx(void *context, const uint8_t *frame, size_t size) {
     (void)frame;
     ((fixture_t *)context)->ethernet_size = size;
 }
-static int wifi_init(void *context, uint32_t operation_id) {
+static int wifi_init(
+    void *context, uint32_t operation_id, uint32_t interface_flags
+) {
     fixture_t *fixture = context;
     ++fixture->initialized;
+    (void)interface_flags;
     (void)wlh_coproc_wifi_initialized(fixture->core, operation_id, 0);
     return 0;
 }
@@ -289,6 +292,7 @@ static void test_hello_wifi_and_ethernet(void) {
         unsigned sent_before = f.sent_count;
         wlh_protocol_v1_WifiInitializeRequest init =
             wlh_protocol_v1_WifiInitializeRequest_init_zero;
+        init.interface_flags = 1u;
         incoming_size = make_rpc_frame(
             incoming,
             42,

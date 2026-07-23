@@ -82,7 +82,9 @@ typedef struct wlh_coproc_wifi_ap {
     uint32_t max_clients;
 } wlh_coproc_wifi_ap_t;
 
-typedef int (*wlh_wifi_initialize_fn)(void *context, uint32_t operation_id);
+typedef int (*wlh_wifi_initialize_fn)(
+    void *context, uint32_t operation_id, uint32_t interface_flags
+);
 typedef int (*wlh_wifi_scan_fn)(void *context, uint32_t scan_id);
 typedef int (*wlh_wifi_connect_fn)(
     void *context, const wlh_coproc_wifi_connect_t *request
