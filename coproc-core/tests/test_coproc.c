@@ -66,6 +66,35 @@ static void buffer_free(void *context, uint8_t *buffer) {
     (void)context;
     free(buffer);
 }
+
+typedef struct failing_allocator {
+    size_t attempts;
+    size_t fail_at;
+    size_t outstanding;
+} failing_allocator_t;
+
+static uint8_t *failing_buffer_alloc(void *context, size_t size) {
+    failing_allocator_t *allocator = context;
+    uint8_t *buffer;
+
+    ++allocator->attempts;
+    if (allocator->attempts == allocator->fail_at)
+        return NULL;
+    buffer = malloc(size);
+    if (buffer != NULL)
+        ++allocator->outstanding;
+    return buffer;
+}
+
+static void failing_buffer_free(void *context, uint8_t *buffer) {
+    failing_allocator_t *allocator = context;
+
+    CHECK(buffer != NULL);
+    CHECK(allocator->outstanding != 0u);
+    if (allocator->outstanding != 0u)
+        --allocator->outstanding;
+    free(buffer);
+}
 static void ethernet_rx(void *context, const uint8_t *frame, size_t size) {
     (void)frame;
     ((fixture_t *)context)->ethernet_size = size;
@@ -778,6 +807,49 @@ static void test_softap(void) {
         );
     }
 
+    /* Scan result ingress emits an encoded WIFI event. */
+    sent_before = f.sent_count;
+    {
+        static const uint8_t ssid[] = "wlh-scan";
+        static const uint8_t bssid[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+        wlh_coproc_bss_t bss;
+        wlh_protocol_v1_WifiScanResultEvent event =
+            wlh_protocol_v1_WifiScanResultEvent_init_zero;
+
+        memset(&bss, 0, sizeof(bss));
+        bss.ssid = ssid;
+        bss.ssid_size = sizeof(ssid) - 1u;
+        memcpy(bss.bssid, bssid, sizeof(bssid));
+        bss.security =
+            (uint32_t)wlh_protocol_v1_WifiSecurity_WIFI_SECURITY_WPA2_PSK;
+        bss.channel = 6u;
+        bss.rssi_dbm = -42;
+
+        CHECK(wlh_coproc_wifi_scan_result(&core, 11u, &bss) == WLH_COPROC_OK);
+        wait_for_sent(&f, sent_before + 1u);
+        decode_last_sent(&f, &rpc, &rpc_payload, &rpc_payload_size);
+        CHECK(
+            rpc.service_id == WLH_SERVICE_WIFI &&
+            rpc.method_id == WLH_WIFI_EVENT_SCAN_RESULT &&
+            rpc.kind == WLH_RPC_KIND_EVENT
+        );
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        CHECK(pb_decode(
+            &stream, wlh_protocol_v1_WifiScanResultEvent_fields, &event
+        ));
+        CHECK(
+            event.scan_id == 11u && event.networks_count == 1u &&
+            event.networks[0].ssid.size == sizeof(ssid) - 1u &&
+            memcmp(event.networks[0].ssid.bytes, ssid, sizeof(ssid) - 1u) ==
+                0 &&
+            event.networks[0].bssid.size == sizeof(bssid) &&
+            memcmp(event.networks[0].bssid.bytes, bssid, sizeof(bssid)) == 0 &&
+            event.networks[0].security ==
+                wlh_protocol_v1_WifiSecurity_WIFI_SECURITY_WPA2_PSK &&
+            event.networks[0].channel == 6u && event.networks[0].rssi_dbm == -42
+        );
+    }
+
     /* AP client joined ingress emits a WIFI event. */
     sent_before = f.sent_count;
     {
@@ -834,11 +906,41 @@ static void test_softap(void) {
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }
 
+static void test_large_message_allocation_failures(void) {
+    static const uint8_t ssid[] = "allocation-test";
+    wlh_coproc_t core;
+    wlh_coproc_bss_t bss;
+    failing_allocator_t allocator;
+
+    memset(&core, 0, sizeof(core));
+    memset(&bss, 0, sizeof(bss));
+    memset(&allocator, 0, sizeof(allocator));
+    core.config.buffers = (wlh_coproc_buffer_ops_t){&allocator,
+                                                    failing_buffer_alloc,
+                                                    failing_buffer_free};
+    bss.ssid = ssid;
+    bss.ssid_size = sizeof(ssid) - 1u;
+
+    allocator.fail_at = 1u;
+    CHECK(
+        wlh_coproc_wifi_scan_result(&core, 1u, &bss) == WLH_COPROC_BACKEND_ERROR
+    );
+    CHECK(allocator.outstanding == 0u);
+
+    allocator.attempts = 0u;
+    allocator.fail_at = 2u;
+    CHECK(
+        wlh_coproc_wifi_scan_result(&core, 1u, &bss) == WLH_COPROC_BACKEND_ERROR
+    );
+    CHECK(allocator.outstanding == 0u);
+}
+
 int main(void) {
     test_hello_wifi_and_ethernet();
     test_device_info_and_user_passthrough();
     test_optional_services_not_configured();
     test_softap();
+    test_large_message_allocation_failures();
     if (failures != 0)
         return 1;
     puts("coprocessor core tests passed");

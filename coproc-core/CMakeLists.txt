@@ -22,6 +22,9 @@ target_link_libraries(wlh_coproc_core PUBLIC
 set_target_properties(wlh_coproc_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(wlh_coproc_core PRIVATE -Wall -Werror)
+  if(NOT CMAKE_C_FLAGS MATCHES "sanitize")
+    target_compile_options(wlh_coproc_core PRIVATE -Wframe-larger-than=640)
+  endif()
 endif()
 
 if(BUILD_TESTING)

@@ -350,77 +350,120 @@ static wlh_host_result_t send_rpc(
     size_t payload_size,
     bool reserved
 ) {
-    uint8_t rpc[WLH_HOST_RPC_LIMIT];
+    uint8_t *rpc;
+    wlh_host_result_t result;
+    size_t rpc_capacity;
     size_t rpc_size = 0u;
     uint8_t channel = envelope->service_id == WLH_SERVICE_LINK
                           ? WLH_CHANNEL_LINK_CONTROL
                           : WLH_CHANNEL_CONTROL_RPC;
+
+    if (payload_size > WLH_HOST_PROTOBUF_LIMIT)
+        return WLH_HOST_INVALID_ARGUMENT;
+    rpc_capacity = WLH_RPC_ENVELOPE_SIZE + payload_size;
+    rpc =
+        host->config.buffers.alloc(host->config.buffers.context, rpc_capacity);
+    if (rpc == NULL)
+        return WLH_HOST_NO_MEMORY;
     if (wlh_rpc_encode(
-            rpc, sizeof(rpc), &rpc_size, envelope, payload, payload_size
+            rpc, rpc_capacity, &rpc_size, envelope, payload, payload_size
         ) != WLH_WIRE_OK) {
+        host->config.buffers.free(host->config.buffers.context, rpc);
         return WLH_HOST_PROTOCOL_ERROR;
     }
-    return send_payload_frame(host, channel, rpc, rpc_size, reserved);
+    result = send_payload_frame(host, channel, rpc, rpc_size, reserved);
+    host->config.buffers.free(host->config.buffers.context, rpc);
+    return result;
+}
+
+static wlh_host_result_t send_rpc_message(
+    wlh_host_t *host,
+    const wlh_rpc_envelope_t *envelope,
+    const pb_msgdesc_t *fields,
+    const void *message,
+    bool reserved
+) {
+    uint8_t *payload;
+    size_t payload_size = 0u;
+    size_t encoded_size = 0u;
+    wlh_host_result_t result;
+
+    if (!pb_get_encoded_size(&payload_size, fields, message) ||
+        payload_size > WLH_HOST_PROTOBUF_LIMIT) {
+        return WLH_HOST_PROTOCOL_ERROR;
+    }
+    if (payload_size == 0u)
+        return send_rpc(host, envelope, NULL, 0u, reserved);
+    payload =
+        host->config.buffers.alloc(host->config.buffers.context, payload_size);
+    if (payload == NULL)
+        return WLH_HOST_NO_MEMORY;
+    result = encode_pb(payload, payload_size, &encoded_size, fields, message);
+    if (result == WLH_HOST_OK && encoded_size == payload_size) {
+        result = send_rpc(host, envelope, payload, payload_size, reserved);
+    } else {
+        result = WLH_HOST_PROTOCOL_ERROR;
+    }
+    host->config.buffers.free(host->config.buffers.context, payload);
+    return result;
 }
 
 static wlh_host_result_t send_hello(wlh_host_t *host) {
-    wlh_protocol_v1_HelloRequest hello = wlh_protocol_v1_HelloRequest_init_zero;
+    wlh_protocol_v1_HelloRequest *hello;
     wlh_rpc_envelope_t envelope;
-    uint8_t payload[WLH_HOST_PROTOBUF_LIMIT];
-    size_t payload_size = 0u;
+    wlh_host_result_t result;
 
-    hello.protocol_versions_count = 1u;
-    hello.protocol_versions[0].major = 1u;
-    hello.protocol_versions[0].min_minor = 0u;
-    hello.protocol_versions[0].max_minor = 0u;
+    hello = (wlh_protocol_v1_HelloRequest *)host->config.buffers.alloc(
+        host->config.buffers.context, sizeof(*hello)
+    );
+    if (hello == NULL)
+        return WLH_HOST_NO_MEMORY;
+    memset(hello, 0, sizeof(*hello));
+
+    hello->protocol_versions_count = 1u;
+    hello->protocol_versions[0].major = 1u;
+    hello->protocol_versions[0].min_minor = 0u;
+    hello->protocol_versions[0].max_minor = 0u;
     memcpy(
-        hello.implementation,
+        hello->implementation,
         "wl-hosted-host-core",
         sizeof("wl-hosted-host-core")
     );
-    memcpy(hello.implementation_version, "0.1.0", sizeof("0.1.0"));
-    hello.max_frame_size = host->config.max_frame_size;
-    hello.alignment = 1u;
-    hello.checksum_modes_count = 2u;
-    hello.checksum_modes[0] = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
-    hello.checksum_modes[1] = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_CRC32C;
-    hello.max_rpc_payload = WLH_HOST_PROTOBUF_LIMIT;
-    hello.services_count = 3u;
+    memcpy(hello->implementation_version, "0.1.0", sizeof("0.1.0"));
+    hello->max_frame_size = host->config.max_frame_size;
+    hello->alignment = 1u;
+    hello->checksum_modes_count = 2u;
+    hello->checksum_modes[0] = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
+    hello->checksum_modes[1] =
+        wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_CRC32C;
+    hello->max_rpc_payload = WLH_HOST_PROTOBUF_LIMIT;
+    hello->services_count = 3u;
     // clang-format off
-    hello.services[0] = (wlh_protocol_v1_ServiceVersionRange){
+    hello->services[0] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_LINK, 1u, 0u, 0u,
     };
 
-    hello.services[1] = (wlh_protocol_v1_ServiceVersionRange){
+    hello->services[1] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_WIFI, 1u, 0u, 0u,
     };
 
-    hello.services[2] = (wlh_protocol_v1_ServiceVersionRange){
+    hello->services[2] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_DIAGNOSTICS, 1u, 0u, 0u,
     };
 
-    hello.channels_count = 3u;
-    hello.channels[0] = (wlh_protocol_v1_ChannelCapability){
+    hello->channels_count = 3u;
+    hello->channels[0] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_LINK_CONTROL, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
 
-    hello.channels[1] = (wlh_protocol_v1_ChannelCapability){
+    hello->channels[1] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_CONTROL_RPC, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
 
-    hello.channels[2] = (wlh_protocol_v1_ChannelCapability){
+    hello->channels[2] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_ETHERNET_STA, 1600u, 0u, 1u, 0u,
     };
     // clang-format on
-    if (encode_pb(
-            payload,
-            sizeof(payload),
-            &payload_size,
-            wlh_protocol_v1_HelloRequest_fields,
-            &hello
-        ) != WLH_HOST_OK) {
-        return WLH_HOST_PROTOCOL_ERROR;
-    }
     memset(&envelope, 0, sizeof(envelope));
     envelope.service_id = WLH_SERVICE_LINK;
     envelope.method_id = WLH_LINK_METHOD_HELLO;
@@ -430,7 +473,11 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
     }
     envelope.kind = WLH_RPC_KIND_REQUEST;
     set_state(host, WLH_HOST_STATE_NEGOTIATING);
-    return send_rpc(host, &envelope, payload, payload_size, true);
+    result = send_rpc_message(
+        host, &envelope, wlh_protocol_v1_HelloRequest_fields, hello, true
+    );
+    host->config.buffers.free(host->config.buffers.context, (uint8_t *)hello);
+    return result;
 }
 
 static wlh_pending_rpc_t *allocate_pending(wlh_host_t *host) {
@@ -466,32 +513,116 @@ static wlh_pending_rpc_t *find_pending(
 static wlh_host_result_t handle_hello_response(
     wlh_host_t *host, const uint8_t *payload, size_t payload_size
 ) {
-    wlh_protocol_v1_HelloResponse hello =
-        wlh_protocol_v1_HelloResponse_init_zero;
+    wlh_protocol_v1_HelloResponse *hello;
     pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
     size_t index;
-    if (!pb_decode(&stream, wlh_protocol_v1_HelloResponse_fields, &hello) ||
-        !hello.has_selected_protocol || hello.selected_protocol.major != 1u ||
-        hello.session_id == 0u ||
-        hello.max_frame_size < WLH_FRAME_HEADER_SIZE) {
+    hello = (wlh_protocol_v1_HelloResponse *)host->config.buffers.alloc(
+        host->config.buffers.context, sizeof(*hello)
+    );
+    if (hello == NULL)
+        return WLH_HOST_NO_MEMORY;
+    memset(hello, 0, sizeof(*hello));
+    if (!pb_decode(&stream, wlh_protocol_v1_HelloResponse_fields, hello) ||
+        !hello->has_selected_protocol || hello->selected_protocol.major != 1u ||
+        hello->session_id == 0u ||
+        hello->max_frame_size < WLH_FRAME_HEADER_SIZE) {
+        host->config.buffers.free(
+            host->config.buffers.context, (uint8_t *)hello
+        );
         set_state(host, WLH_HOST_STATE_FAILED);
         return WLH_HOST_PROTOCOL_ERROR;
     }
-    host->session_id = hello.session_id;
-    host->diagnostics.session_id = hello.session_id;
+    host->session_id = hello->session_id;
+    host->diagnostics.session_id = hello->session_id;
     WLH_LOGI(
-        "wlh_host", "negotiated session %lu", (unsigned long)hello.session_id
+        "wlh_host", "negotiated session %lu", (unsigned long)hello->session_id
     );
     memset(host->tx_credit, 0, sizeof(host->tx_credit));
-    for (index = 0; index < hello.initial_credits_count; ++index) {
-        if (hello.initial_credits[index].channel_id < WLH_HOST_CHANNEL_COUNT) {
-            host->tx_credit[hello.initial_credits[index].channel_id] =
-                hello.initial_credits[index].units;
+    for (index = 0; index < hello->initial_credits_count; ++index) {
+        if (hello->initial_credits[index].channel_id < WLH_HOST_CHANNEL_COUNT) {
+            host->tx_credit[hello->initial_credits[index].channel_id] =
+                hello->initial_credits[index].units;
         }
     }
+    host->config.buffers.free(host->config.buffers.context, (uint8_t *)hello);
     host->diagnostics.last_peer_activity_ms = now_ms(host);
     set_state(host, WLH_HOST_STATE_READY);
     return WLH_HOST_OK;
+}
+
+static void handle_credit_update(
+    wlh_host_t *host, const uint8_t *payload, size_t payload_size
+) {
+    wlh_protocol_v1_CreditUpdate credit =
+        wlh_protocol_v1_CreditUpdate_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
+    if (pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &credit) &&
+        credit.channel_id < WLH_HOST_CHANNEL_COUNT) {
+        uint32_t old = host->tx_credit[credit.channel_id];
+        host->tx_credit[credit.channel_id] =
+            UINT32_MAX - old < credit.units ? UINT32_MAX : old + credit.units;
+        if (host->state == WLH_HOST_STATE_CONGESTED)
+            set_state(host, WLH_HOST_STATE_READY);
+    }
+}
+
+static void handle_heartbeat(
+    wlh_host_t *host, const uint8_t *payload, size_t payload_size
+) {
+    wlh_protocol_v1_Heartbeat *heartbeat;
+    pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
+    heartbeat = (wlh_protocol_v1_Heartbeat *)host->config.buffers.alloc(
+        host->config.buffers.context, sizeof(*heartbeat)
+    );
+    if (heartbeat == NULL)
+        return;
+    memset(heartbeat, 0, sizeof(*heartbeat));
+    if (pb_decode(&stream, wlh_protocol_v1_Heartbeat_fields, heartbeat) &&
+        heartbeat->session_id == host->session_id) {
+        host->diagnostics.last_peer_activity_ms = now_ms(host);
+    }
+    host->config.buffers.free(
+        host->config.buffers.context, (uint8_t *)heartbeat
+    );
+}
+
+static void handle_session_changed(
+    wlh_host_t *host, const uint8_t *payload, size_t payload_size
+) {
+    wlh_protocol_v1_SessionChangedEvent *changed;
+    pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
+    uint32_t new_session_id;
+    changed = (wlh_protocol_v1_SessionChangedEvent *)host->config.buffers.alloc(
+        host->config.buffers.context, sizeof(*changed)
+    );
+    if (changed == NULL)
+        return;
+    memset(changed, 0, sizeof(*changed));
+    if (!pb_decode(
+            &stream, wlh_protocol_v1_SessionChangedEvent_fields, changed
+        ) ||
+        changed->new_session_id == 0u ||
+        changed->new_session_id == host->session_id) {
+        host->config.buffers.free(
+            host->config.buffers.context, (uint8_t *)changed
+        );
+        return;
+    }
+    new_session_id = changed->new_session_id;
+    (void)new_session_id;
+    host->config.buffers.free(host->config.buffers.context, (uint8_t *)changed);
+    host->diagnostics.peer_resets++;
+    WLH_LOGW(
+        "wlh_host",
+        "peer requested session change %lu -> %lu",
+        (unsigned long)host->session_id,
+        (unsigned long)new_session_id
+    );
+    cancel_pending(host, WLH_HOST_SESSION_CHANGED);
+    host->session_id = 0u;
+    memset(host->tx_credit, 0, sizeof(host->tx_credit));
+    memset(host->rx_sequence_valid, 0, sizeof(host->rx_sequence_valid));
+    (void)send_hello(host);
 }
 
 static void handle_link_event(
@@ -501,49 +632,11 @@ static void handle_link_event(
     size_t payload_size
 ) {
     if (envelope->method_id == WLH_LINK_METHOD_CREDIT_UPDATE) {
-        wlh_protocol_v1_CreditUpdate credit =
-            wlh_protocol_v1_CreditUpdate_init_zero;
-        pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
-        if (pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &credit) &&
-            credit.channel_id < WLH_HOST_CHANNEL_COUNT) {
-            uint32_t old = host->tx_credit[credit.channel_id];
-            host->tx_credit[credit.channel_id] = UINT32_MAX - old < credit.units
-                                                     ? UINT32_MAX
-                                                     : old + credit.units;
-            if (host->state == WLH_HOST_STATE_CONGESTED) {
-                set_state(host, WLH_HOST_STATE_READY);
-            }
-        }
+        handle_credit_update(host, payload, payload_size);
     } else if (envelope->method_id == WLH_LINK_METHOD_HEARTBEAT) {
-        wlh_protocol_v1_Heartbeat heartbeat =
-            wlh_protocol_v1_Heartbeat_init_zero;
-        pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
-        if (pb_decode(&stream, wlh_protocol_v1_Heartbeat_fields, &heartbeat) &&
-            heartbeat.session_id == host->session_id) {
-            host->diagnostics.last_peer_activity_ms = now_ms(host);
-        }
+        handle_heartbeat(host, payload, payload_size);
     } else if (envelope->method_id == WLH_LINK_EVENT_SESSION_CHANGED) {
-        wlh_protocol_v1_SessionChangedEvent changed =
-            wlh_protocol_v1_SessionChangedEvent_init_zero;
-        pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
-        if (pb_decode(
-                &stream, wlh_protocol_v1_SessionChangedEvent_fields, &changed
-            ) &&
-            changed.new_session_id != 0u &&
-            changed.new_session_id != host->session_id) {
-            host->diagnostics.peer_resets++;
-            WLH_LOGW(
-                "wlh_host",
-                "peer requested session change %lu -> %lu",
-                (unsigned long)host->session_id,
-                (unsigned long)changed.new_session_id
-            );
-            cancel_pending(host, WLH_HOST_SESSION_CHANGED);
-            host->session_id = 0u;
-            memset(host->tx_credit, 0, sizeof(host->tx_credit));
-            memset(host->rx_sequence_valid, 0, sizeof(host->rx_sequence_valid));
-            (void)send_hello(host);
-        }
+        handle_session_changed(host, payload, payload_size);
     }
 }
 
@@ -1206,6 +1299,53 @@ wlh_host_result_t wlh_host_rpc_request(
     return WLH_HOST_OK;
 }
 
+static wlh_host_result_t rpc_message_request(
+    wlh_host_t *host,
+    uint16_t service_id,
+    uint16_t method_id,
+    const pb_msgdesc_t *fields,
+    const void *message,
+    wlh_rpc_completion_fn completion,
+    void *context
+) {
+    uint8_t *payload;
+    size_t payload_size = 0u;
+    size_t encoded_size = 0u;
+    wlh_host_result_t result;
+
+    if (!pb_get_encoded_size(&payload_size, fields, message) ||
+        payload_size > WLH_HOST_PROTOBUF_LIMIT) {
+        return WLH_HOST_PROTOCOL_ERROR;
+    }
+    if (payload_size == 0u) {
+        return wlh_host_rpc_request(
+            host, service_id, method_id, NULL, 0u, 0u, completion, context, NULL
+        );
+    }
+    payload =
+        host->config.buffers.alloc(host->config.buffers.context, payload_size);
+    if (payload == NULL)
+        return WLH_HOST_NO_MEMORY;
+    result = encode_pb(payload, payload_size, &encoded_size, fields, message);
+    if (result == WLH_HOST_OK && encoded_size == payload_size) {
+        result = wlh_host_rpc_request(
+            host,
+            service_id,
+            method_id,
+            payload,
+            payload_size,
+            0u,
+            completion,
+            context,
+            NULL
+        );
+    } else {
+        result = WLH_HOST_PROTOCOL_ERROR;
+    }
+    host->config.buffers.free(host->config.buffers.context, payload);
+    return result;
+}
+
 static wlh_host_result_t wifi_request(
     wlh_host_t *host,
     uint16_t method,
@@ -1214,22 +1354,8 @@ static wlh_host_result_t wifi_request(
     wlh_rpc_completion_fn completion,
     void *context
 ) {
-    uint8_t payload[WLH_HOST_PROTOBUF_LIMIT];
-    size_t payload_size = 0u;
-    wlh_host_result_t result =
-        encode_pb(payload, sizeof(payload), &payload_size, fields, message);
-    if (result != WLH_HOST_OK)
-        return result;
-    return wlh_host_rpc_request(
-        host,
-        WLH_SERVICE_WIFI,
-        method,
-        payload,
-        payload_size,
-        0u,
-        completion,
-        context,
-        NULL
+    return rpc_message_request(
+        host, WLH_SERVICE_WIFI, method, fields, message, completion, context
     );
 }
 
@@ -1434,21 +1560,9 @@ wlh_host_result_t wlh_host_get_device_info(
     wlh_device_info_request_t *request;
     wlh_host_result_t result;
     wlh_protocol_v1_Empty message = wlh_protocol_v1_Empty_init_zero;
-    uint8_t payload[WLH_HOST_PROTOBUF_LIMIT];
-    size_t payload_size = 0u;
 
     if (host == NULL || completion == NULL || !host->worker_started)
         return WLH_HOST_INVALID_ARGUMENT;
-    result = encode_pb(
-        payload,
-        sizeof(payload),
-        &payload_size,
-        wlh_protocol_v1_Empty_fields,
-        &message
-    );
-    if (result != WLH_HOST_OK)
-        return result;
-
     request = (wlh_device_info_request_t *)host->config.buffers.alloc(
         host->config.buffers.context, sizeof(*request)
     );
@@ -1458,16 +1572,14 @@ wlh_host_result_t wlh_host_get_device_info(
     request->completion = completion;
     request->context = context;
 
-    result = wlh_host_rpc_request(
+    result = rpc_message_request(
         host,
         WLH_SERVICE_DEVICE_INFO,
         WLH_DEVICE_INFO_METHOD_GET_INFO,
-        payload,
-        payload_size,
-        0u,
+        wlh_protocol_v1_Empty_fields,
+        &message,
         device_info_completion,
-        request,
-        NULL
+        request
     );
     if (result != WLH_HOST_OK) {
         host->config.buffers.free(
@@ -1487,44 +1599,39 @@ wlh_host_result_t wlh_host_user_message_send(
     wlh_rpc_completion_fn completion,
     void *context
 ) {
-    uint8_t encoded[WLH_HOST_PROTOBUF_LIMIT];
-    size_t encoded_size = 0u;
+    wlh_protocol_v1_UserMessageSendRequest *request;
     wlh_host_result_t result;
-    wlh_protocol_v1_UserMessageSendRequest request =
-        wlh_protocol_v1_UserMessageSendRequest_init_zero;
 
     if (host == NULL || endpoint_id == 0u ||
         payload_size > WLH_HOST_MAX_USER_PAYLOAD_SIZE ||
         (payload_size != 0u && payload == NULL))
         return WLH_HOST_INVALID_ARGUMENT;
 
-    request.endpoint_id = endpoint_id;
-    request.message_type = message_type;
-    request.flags = flags;
-    request.payload.size = payload_size;
+    request =
+        (wlh_protocol_v1_UserMessageSendRequest *)host->config.buffers.alloc(
+            host->config.buffers.context, sizeof(*request)
+        );
+    if (request == NULL)
+        return WLH_HOST_NO_MEMORY;
+    memset(request, 0, sizeof(*request));
+    request->endpoint_id = endpoint_id;
+    request->message_type = message_type;
+    request->flags = flags;
+    request->payload.size = payload_size;
     if (payload_size != 0u)
-        memcpy(request.payload.bytes, payload, payload_size);
+        memcpy(request->payload.bytes, payload, payload_size);
 
-    result = encode_pb(
-        encoded,
-        sizeof(encoded),
-        &encoded_size,
-        wlh_protocol_v1_UserMessageSendRequest_fields,
-        &request
-    );
-    if (result != WLH_HOST_OK)
-        return result;
-    return wlh_host_rpc_request(
+    result = rpc_message_request(
         host,
         WLH_SERVICE_USER_PASSTHROUGH,
         WLH_USER_PASSTHROUGH_METHOD_SEND,
-        encoded,
-        encoded_size,
-        0u,
+        wlh_protocol_v1_UserMessageSendRequest_fields,
+        request,
         completion,
-        context,
-        NULL
+        context
     );
+    host->config.buffers.free(host->config.buffers.context, (uint8_t *)request);
+    return result;
 }
 
 wlh_host_result_t wlh_host_ethernet_sta_send(

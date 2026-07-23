@@ -394,6 +394,34 @@ static void buffer_free(void *context, uint8_t *buffer) {
     (void)context;
     free(buffer);
 }
+
+typedef struct failing_allocator {
+    size_t attempts;
+    size_t fail_at;
+    size_t outstanding;
+} failing_allocator_t;
+
+static uint8_t *failing_buffer_alloc(void *context, size_t size) {
+    failing_allocator_t *allocator = context;
+    uint8_t *buffer;
+
+    ++allocator->attempts;
+    if (allocator->attempts == allocator->fail_at)
+        return NULL;
+    buffer = malloc(size);
+    if (buffer != NULL)
+        ++allocator->outstanding;
+    return buffer;
+}
+
+static void failing_buffer_free(void *context, uint8_t *buffer) {
+    failing_allocator_t *allocator = context;
+
+    assert(buffer != NULL);
+    assert(allocator->outstanding != 0u);
+    --allocator->outstanding;
+    free(buffer);
+}
 static int post_now(void *context, wlh_task_fn task, void *task_context) {
     (void)context;
     task(task_context);
@@ -1264,12 +1292,42 @@ static void test_wifi_softap(void) {
     assert(wlh_host_stop(&fixture.host) == WLH_HOST_OK);
 }
 
+static void test_large_message_allocation_failures(void) {
+    static const uint8_t payload[] = "allocation-test";
+    wlh_host_t host;
+    failing_allocator_t allocator;
+
+    memset(&host, 0, sizeof(host));
+    memset(&allocator, 0, sizeof(allocator));
+    host.config.buffers = (wlh_buffer_ops_t){&allocator,
+                                             failing_buffer_alloc,
+                                             failing_buffer_free};
+
+    allocator.fail_at = 1u;
+    assert(
+        wlh_host_user_message_send(
+            &host, 1u, 1u, 0u, payload, sizeof(payload) - 1u, NULL, NULL
+        ) == WLH_HOST_NO_MEMORY
+    );
+    assert(allocator.outstanding == 0u);
+
+    allocator.attempts = 0u;
+    allocator.fail_at = 2u;
+    assert(
+        wlh_host_user_message_send(
+            &host, 1u, 1u, 0u, payload, sizeof(payload) - 1u, NULL, NULL
+        ) == WLH_HOST_NO_MEMORY
+    );
+    assert(allocator.outstanding == 0u);
+}
+
 int main(void) {
     test_handshake_and_rpc();
     test_timeout_credit_and_session();
     test_asynchronous_transport_start();
     test_device_info_and_user_passthrough();
     test_wifi_softap();
+    test_large_message_allocation_failures();
     puts("host core tests passed");
     return 0;
 }

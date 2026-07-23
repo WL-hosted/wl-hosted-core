@@ -15,6 +15,12 @@
 #define RPC_BUFFER_SIZE 1536u
 #define RAW_HEADER_SIZE 8u
 
+#if defined(__GNUC__) || defined(__clang__)
+#define WLH_NOINLINE __attribute__((noinline))
+#else
+#define WLH_NOINLINE
+#endif
+
 typedef enum coproc_job_kind {
     COPROC_JOB_STOP = 1,
     COPROC_JOB_RX_FRAME,
@@ -169,15 +175,26 @@ static wlh_coproc_result_t send_payload(
 }
 
 // clang-format off
-static wlh_coproc_result_t send_rpc(
+static WLH_NOINLINE wlh_coproc_result_t send_rpc(
     wlh_coproc_t *coproc,
     uint16_t service_id, uint16_t method_id, uint32_t request_id, uint8_t kind,
     uint16_t status_domain, int16_t status_code,
     const uint8_t *payload, size_t payload_size) {
     // clang-format on
-    uint8_t rpc[RPC_BUFFER_SIZE];
+    uint8_t *rpc;
     wlh_rpc_envelope_t envelope;
+    wlh_coproc_result_t result;
+    size_t rpc_capacity;
     size_t rpc_size = 0;
+
+    if (payload_size > RPC_BUFFER_SIZE - WLH_RPC_ENVELOPE_SIZE)
+        return WLH_COPROC_INVALID_ARGUMENT;
+    rpc_capacity = WLH_RPC_ENVELOPE_SIZE + payload_size;
+    rpc = coproc->config.buffers.alloc(
+        coproc->config.buffers.context, rpc_capacity
+    );
+    if (rpc == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
 
     memset(&envelope, 0, sizeof(envelope));
     envelope.service_id = service_id;
@@ -188,17 +205,20 @@ static wlh_coproc_result_t send_rpc(
     envelope.status_code = status_code;
 
     if (wlh_rpc_encode(
-            rpc, sizeof(rpc), &rpc_size, &envelope, payload, payload_size
+            rpc, rpc_capacity, &rpc_size, &envelope, payload, payload_size
         ) != WLH_WIRE_OK) {
+        coproc->config.buffers.free(coproc->config.buffers.context, rpc);
         return WLH_COPROC_PROTOCOL_ERROR;
     }
-    return send_payload(
+    result = send_payload(
         coproc,
         service_id == WLH_SERVICE_LINK ? WLH_CHANNEL_LINK_CONTROL
                                        : WLH_CHANNEL_CONTROL_RPC,
         rpc,
         rpc_size
     );
+    coproc->config.buffers.free(coproc->config.buffers.context, rpc);
+    return result;
 }
 
 static bool encode_message(
@@ -216,56 +236,109 @@ static bool encode_message(
     return true;
 }
 
-static wlh_coproc_result_t send_hello_response(
-    wlh_coproc_t *coproc, uint32_t request_id
+static WLH_NOINLINE wlh_coproc_result_t send_rpc_message(
+    wlh_coproc_t *coproc,
+    uint16_t service_id,
+    uint16_t method_id,
+    uint32_t request_id,
+    uint8_t kind,
+    uint16_t status_domain,
+    int16_t status_code,
+    const pb_msgdesc_t *fields,
+    const void *message
 ) {
-    uint8_t payload[RPC_BUFFER_SIZE];
-    size_t payload_size = 0;
+    uint8_t *payload;
+    size_t payload_size = 0u;
+    size_t encoded_size = 0u;
+    wlh_coproc_result_t result;
+
+    if (!pb_get_encoded_size(&payload_size, fields, message) ||
+        payload_size > RPC_BUFFER_SIZE - WLH_RPC_ENVELOPE_SIZE) {
+        return WLH_COPROC_PROTOCOL_ERROR;
+    }
+    if (payload_size == 0u) {
+        return send_rpc(
+            coproc,
+            service_id,
+            method_id,
+            request_id,
+            kind,
+            status_domain,
+            status_code,
+            NULL,
+            0u
+        );
+    }
+    payload = coproc->config.buffers.alloc(
+        coproc->config.buffers.context, payload_size
+    );
+    if (payload == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    if (!encode_message(
+            payload, payload_size, &encoded_size, fields, message
+        ) ||
+        encoded_size != payload_size) {
+        coproc->config.buffers.free(coproc->config.buffers.context, payload);
+        return WLH_COPROC_PROTOCOL_ERROR;
+    }
+    result = send_rpc(
+        coproc,
+        service_id,
+        method_id,
+        request_id,
+        kind,
+        status_domain,
+        status_code,
+        payload,
+        payload_size
+    );
+    coproc->config.buffers.free(coproc->config.buffers.context, payload);
+    return result;
+}
+
+static WLH_NOINLINE wlh_coproc_result_t
+send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
+    wlh_protocol_v1_HelloResponse *response;
     size_t i;
     uint32_t selected_session;
     wlh_coproc_result_t result;
-    wlh_protocol_v1_HelloResponse response =
-        wlh_protocol_v1_HelloResponse_init_zero;
+
+    response = (wlh_protocol_v1_HelloResponse *)coproc->config.buffers.alloc(
+        coproc->config.buffers.context, sizeof(*response)
+    );
+    if (response == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(response, 0, sizeof(*response));
 
     selected_session = coproc->next_session_id++;
     if (selected_session == 0u) {
         selected_session = coproc->next_session_id++;
     }
 
-    response.has_selected_protocol = true;
-    response.selected_protocol.major = 1u;
-    response.session_id = selected_session;
-    response.boot_id = selected_session;
+    response->has_selected_protocol = true;
+    response->selected_protocol.major = 1u;
+    response->session_id = selected_session;
+    response->boot_id = selected_session;
     memcpy(
-        response.implementation, "wlh-coproc-core", sizeof("wlh-coproc-core")
+        response->implementation, "wlh-coproc-core", sizeof("wlh-coproc-core")
     );
-    memcpy(response.implementation_version, "0.1.0", sizeof("0.1.0"));
-    response.max_frame_size = coproc->config.max_frame_size;
-    response.alignment = 1u;
-    response.checksum_mode = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
-    response.initial_credits_count = 3u;
+    memcpy(response->implementation_version, "0.1.0", sizeof("0.1.0"));
+    response->max_frame_size = coproc->config.max_frame_size;
+    response->alignment = 1u;
+    response->checksum_mode = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
+    response->initial_credits_count = 3u;
 
     for (i = 0; i < 3u; ++i) {
-        response.initial_credits[i].channel_id = (uint32_t)i;
-        response.initial_credits[i].units = coproc->config.initial_credit;
-        response.initial_credits[i].unit_bytes = 1u;
+        response->initial_credits[i].channel_id = (uint32_t)i;
+        response->initial_credits[i].units = coproc->config.initial_credit;
+        response->initial_credits[i].unit_bytes = 1u;
         coproc->tx_credit[i] = coproc->config.initial_credit;
-    }
-
-    if (!encode_message(
-            payload,
-            sizeof(payload),
-            &payload_size,
-            wlh_protocol_v1_HelloResponse_fields,
-            &response
-        )) {
-        return WLH_COPROC_PROTOCOL_ERROR;
     }
 
     /* Negotiation frames use session 0. The selected session takes effect only
        after the complete HelloResponse has been sent. */
     coproc->session_id = 0u;
-    result = send_rpc(
+    result = send_rpc_message(
         coproc,
         WLH_SERVICE_LINK,
         WLH_LINK_METHOD_HELLO,
@@ -273,8 +346,11 @@ static wlh_coproc_result_t send_hello_response(
         WLH_RPC_KIND_RESPONSE,
         WLH_STATUS_DOMAIN_NONE,
         WLH_STATUS_OK,
-        payload,
-        payload_size
+        wlh_protocol_v1_HelloResponse_fields,
+        response
+    );
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)response
     );
     if (result == WLH_COPROC_OK) {
         coproc->session_id = selected_session;
@@ -304,7 +380,7 @@ static wlh_coproc_result_t send_status(
     );
 }
 
-static wlh_coproc_result_t handle_wifi(
+static WLH_NOINLINE wlh_coproc_result_t handle_wifi(
     wlh_coproc_t *coproc,
     const wlh_rpc_envelope_t *request,
     const uint8_t *payload,
@@ -365,60 +441,97 @@ static wlh_coproc_result_t handle_wifi(
     }
 
     case WLH_WIFI_METHOD_SCAN_START: {
-        wlh_protocol_v1_WifiScanRequest message =
-            wlh_protocol_v1_WifiScanRequest_init_zero;
+        wlh_protocol_v1_WifiScanRequest *message;
+        uint32_t scan_id;
+        message =
+            (wlh_protocol_v1_WifiScanRequest *)coproc->config.buffers.alloc(
+                coproc->config.buffers.context, sizeof(*message)
+            );
+        if (message == NULL)
+            return WLH_COPROC_BACKEND_ERROR;
+        memset(message, 0, sizeof(*message));
         stream = pb_istream_from_buffer(payload, payload_size);
         if (!pb_decode(
-                &stream, wlh_protocol_v1_WifiScanRequest_fields, &message
+                &stream, wlh_protocol_v1_WifiScanRequest_fields, message
             )) {
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)message
+            );
             return WLH_COPROC_PROTOCOL_ERROR;
         }
+        scan_id = message->scan_id;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)message
+        );
         WLH_LOGI(
             "wlh_coproc",
             "wifi scan start request %lu scan_id=%lu",
             (unsigned long)request->request_id,
-            (unsigned long)message.scan_id
+            (unsigned long)scan_id
         );
-        status = coproc->config.wifi.scan != NULL
-                     ? coproc->config.wifi.scan(
-                           coproc->config.wifi.context, message.scan_id
-                       )
-                     : -1;
+        status =
+            coproc->config.wifi.scan != NULL
+                ? coproc->config.wifi.scan(coproc->config.wifi.context, scan_id)
+                : -1;
         break;
     }
 
     case WLH_WIFI_METHOD_CONNECT: {
-        wlh_protocol_v1_WifiConnectRequest message =
-            wlh_protocol_v1_WifiConnectRequest_init_zero;
-        wlh_coproc_wifi_connect_t connect;
+        wlh_protocol_v1_WifiConnectRequest *message;
+        wlh_coproc_wifi_connect_t *connect;
+        message =
+            (wlh_protocol_v1_WifiConnectRequest *)coproc->config.buffers.alloc(
+                coproc->config.buffers.context, sizeof(*message)
+            );
+        if (message == NULL)
+            return WLH_COPROC_BACKEND_ERROR;
+        memset(message, 0, sizeof(*message));
         stream = pb_istream_from_buffer(payload, payload_size);
         if (!pb_decode(
-                &stream, wlh_protocol_v1_WifiConnectRequest_fields, &message
+                &stream, wlh_protocol_v1_WifiConnectRequest_fields, message
             )) {
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)message
+            );
             return WLH_COPROC_PROTOCOL_ERROR;
         }
-        memset(&connect, 0, sizeof(connect));
-        connect.ssid_size = message.ssid.size;
-        connect.credential_size = message.credential.size;
-        memcpy(connect.ssid, message.ssid.bytes, connect.ssid_size);
-        memcpy(
-            connect.credential,
-            message.credential.bytes,
-            connect.credential_size
+        connect = (wlh_coproc_wifi_connect_t *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*connect)
         );
-        connect.security = (uint32_t)message.security;
+        if (connect == NULL) {
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)message
+            );
+            return WLH_COPROC_BACKEND_ERROR;
+        }
+        memset(connect, 0, sizeof(*connect));
+        connect->ssid_size = message->ssid.size;
+        connect->credential_size = message->credential.size;
+        memcpy(connect->ssid, message->ssid.bytes, connect->ssid_size);
+        memcpy(
+            connect->credential,
+            message->credential.bytes,
+            connect->credential_size
+        );
+        connect->security = (uint32_t)message->security;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)message
+        );
         WLH_LOGI(
             "wlh_coproc",
             "wifi connect request %lu ssid_size=%zu security=%lu",
             (unsigned long)request->request_id,
-            connect.ssid_size,
-            (unsigned long)connect.security
+            connect->ssid_size,
+            (unsigned long)connect->security
         );
         status = coproc->config.wifi.connect != NULL
                      ? coproc->config.wifi.connect(
-                           coproc->config.wifi.context, &connect
+                           coproc->config.wifi.context, connect
                        )
                      : -1;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)connect
+        );
         break;
     }
 
@@ -435,34 +548,58 @@ static wlh_coproc_result_t handle_wifi(
         break;
 
     case WLH_WIFI_METHOD_START_AP: {
-        wlh_protocol_v1_WifiStartApRequest message =
-            wlh_protocol_v1_WifiStartApRequest_init_zero;
-        wlh_coproc_wifi_ap_t ap;
+        wlh_protocol_v1_WifiStartApRequest *message;
+        wlh_coproc_wifi_ap_t *ap;
+        message =
+            (wlh_protocol_v1_WifiStartApRequest *)coproc->config.buffers.alloc(
+                coproc->config.buffers.context, sizeof(*message)
+            );
+        if (message == NULL)
+            return WLH_COPROC_BACKEND_ERROR;
+        memset(message, 0, sizeof(*message));
         stream = pb_istream_from_buffer(payload, payload_size);
         if (!pb_decode(
-                &stream, wlh_protocol_v1_WifiStartApRequest_fields, &message
+                &stream, wlh_protocol_v1_WifiStartApRequest_fields, message
             )) {
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)message
+            );
             return WLH_COPROC_PROTOCOL_ERROR;
         }
-        memset(&ap, 0, sizeof(ap));
-        ap.ssid_size = message.ssid.size;
-        ap.credential_size = message.credential.size;
-        memcpy(ap.ssid, message.ssid.bytes, ap.ssid_size);
-        memcpy(ap.credential, message.credential.bytes, ap.credential_size);
-        ap.security = (uint32_t)message.security;
-        ap.channel = message.channel;
-        ap.max_clients = message.max_clients;
+        ap = (wlh_coproc_wifi_ap_t *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*ap)
+        );
+        if (ap == NULL) {
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)message
+            );
+            return WLH_COPROC_BACKEND_ERROR;
+        }
+        memset(ap, 0, sizeof(*ap));
+        ap->ssid_size = message->ssid.size;
+        ap->credential_size = message->credential.size;
+        memcpy(ap->ssid, message->ssid.bytes, ap->ssid_size);
+        memcpy(ap->credential, message->credential.bytes, ap->credential_size);
+        ap->security = (uint32_t)message->security;
+        ap->channel = message->channel;
+        ap->max_clients = message->max_clients;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)message
+        );
         WLH_LOGI(
             "wlh_coproc",
             "wifi start_ap request %lu channel=%lu max_clients=%lu",
             (unsigned long)request->request_id,
-            (unsigned long)ap.channel,
-            (unsigned long)ap.max_clients
+            (unsigned long)ap->channel,
+            (unsigned long)ap->max_clients
         );
         status =
             coproc->config.wifi.start_ap != NULL
-                ? coproc->config.wifi.start_ap(coproc->config.wifi.context, &ap)
+                ? coproc->config.wifi.start_ap(coproc->config.wifi.context, ap)
                 : -1;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)ap
+        );
         break;
     }
 
@@ -494,7 +631,190 @@ static wlh_coproc_result_t handle_wifi(
     return send_status(coproc, request, status);
 }
 
-static wlh_coproc_result_t handle_rpc(
+static WLH_NOINLINE wlh_coproc_result_t handle_hello_request(
+    wlh_coproc_t *coproc,
+    const wlh_frame_header_t *frame_header,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+) {
+    wlh_protocol_v1_HelloRequest *hello;
+    pb_istream_t stream;
+    size_t i;
+    bool supports_v1 = false;
+    wlh_coproc_result_t result;
+
+    hello = (wlh_protocol_v1_HelloRequest *)coproc->config.buffers.alloc(
+        coproc->config.buffers.context, sizeof(*hello)
+    );
+    if (hello == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(hello, 0, sizeof(*hello));
+    stream = pb_istream_from_buffer(message, message_size);
+    if (frame_header->session_id != 0u ||
+        !pb_decode(&stream, wlh_protocol_v1_HelloRequest_fields, hello)) {
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)hello
+        );
+        return WLH_COPROC_PROTOCOL_ERROR;
+    }
+    for (i = 0; i < hello->protocol_versions_count; ++i) {
+        if (hello->protocol_versions[i].major == 1u)
+            supports_v1 = true;
+    }
+    if (!supports_v1 || hello->max_frame_size < WLH_FRAME_HEADER_SIZE) {
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)hello
+        );
+        return send_rpc(
+            coproc,
+            WLH_SERVICE_LINK,
+            WLH_LINK_METHOD_HELLO,
+            request->request_id,
+            WLH_RPC_KIND_RESPONSE,
+            WLH_STATUS_DOMAIN_PROTOCOL,
+            WLH_STATUS_VERSION_MISMATCH,
+            NULL,
+            0u
+        );
+    }
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)hello
+    );
+    memset(coproc->tx_sequence, 0, sizeof(coproc->tx_sequence));
+    memset(coproc->rx_sequence_valid, 0, sizeof(coproc->rx_sequence_valid));
+    memset(
+        &coproc->wifi_initialize_pending,
+        0,
+        sizeof(coproc->wifi_initialize_pending)
+    );
+    result = send_hello_response(coproc, request->request_id);
+    return result;
+}
+
+static WLH_NOINLINE wlh_coproc_result_t handle_device_info_request(
+    wlh_coproc_t *coproc, const wlh_rpc_envelope_t *request
+) {
+    wlh_protocol_v1_DeviceInfoResponse *response;
+    wlh_coproc_device_info_t info;
+    wlh_coproc_result_t result;
+    int status;
+
+    memset(&info, 0, sizeof(info));
+    status = coproc->config.device_info.get_info(
+        coproc->config.device_info.context, &info
+    );
+    if (status != 0) {
+        return send_rpc(
+            coproc,
+            request->service_id,
+            request->method_id,
+            request->request_id,
+            WLH_RPC_KIND_RESPONSE,
+            WLH_STATUS_DOMAIN_DEVICE_INFO,
+            WLH_STATUS_INTERNAL,
+            NULL,
+            0u
+        );
+    }
+    response =
+        (wlh_protocol_v1_DeviceInfoResponse *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*response)
+        );
+    if (response == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(response, 0, sizeof(*response));
+
+    /* The adapter contract is C strings; enforce termination and bounds
+     * before handing the fields to nanopb. */
+    info.vendor[sizeof(info.vendor) - 1u] = '\0';
+    info.mcu_model[sizeof(info.mcu_model) - 1u] = '\0';
+    info.board_profile[sizeof(info.board_profile) - 1u] = '\0';
+    if (info.uid_size > sizeof(info.uid))
+        info.uid_size = sizeof(info.uid);
+
+    memcpy(response->vendor, info.vendor, sizeof(response->vendor) - 1u);
+    memcpy(
+        response->mcu_model, info.mcu_model, sizeof(response->mcu_model) - 1u
+    );
+    memcpy(
+        response->board_profile,
+        info.board_profile,
+        sizeof(response->board_profile) - 1u
+    );
+    response->uid.size = info.uid_size;
+    memcpy(response->uid.bytes, info.uid, info.uid_size);
+    result = send_rpc_message(
+        coproc,
+        request->service_id,
+        request->method_id,
+        request->request_id,
+        WLH_RPC_KIND_RESPONSE,
+        WLH_STATUS_DOMAIN_NONE,
+        WLH_STATUS_OK,
+        wlh_protocol_v1_DeviceInfoResponse_fields,
+        response
+    );
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)response
+    );
+    return result;
+}
+
+static WLH_NOINLINE wlh_coproc_result_t handle_user_message_request(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+) {
+    wlh_protocol_v1_UserMessageSendRequest *send_request;
+    wlh_coproc_user_message_t user_message;
+    pb_istream_t stream;
+    int status;
+
+    send_request =
+        (wlh_protocol_v1_UserMessageSendRequest *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*send_request)
+        );
+    if (send_request == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(send_request, 0, sizeof(*send_request));
+    stream = pb_istream_from_buffer(message, message_size);
+    if (!pb_decode(
+            &stream, wlh_protocol_v1_UserMessageSendRequest_fields, send_request
+        )) {
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)send_request
+        );
+        return WLH_COPROC_PROTOCOL_ERROR;
+    }
+    memset(&user_message, 0, sizeof(user_message));
+    user_message.endpoint_id = send_request->endpoint_id;
+    user_message.message_type = send_request->message_type;
+    user_message.flags = send_request->flags;
+    user_message.payload = send_request->payload.bytes;
+    user_message.payload_size = send_request->payload.size;
+    user_message.request_id = request->request_id;
+    status = coproc->config.user_passthrough.on_message(
+        coproc->config.user_passthrough.context, &user_message
+    );
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)send_request
+    );
+    return send_rpc(
+        coproc,
+        request->service_id,
+        request->method_id,
+        request->request_id,
+        WLH_RPC_KIND_RESPONSE,
+        status == 0 ? WLH_STATUS_DOMAIN_NONE : WLH_STATUS_DOMAIN_USER,
+        status == 0 ? WLH_STATUS_OK : WLH_STATUS_INTERNAL,
+        NULL,
+        0u
+    );
+}
+
+static WLH_NOINLINE wlh_coproc_result_t handle_rpc(
     wlh_coproc_t *coproc,
     const wlh_frame_header_t *frame_header,
     const uint8_t *payload,
@@ -539,12 +859,23 @@ static wlh_coproc_result_t handle_rpc(
 
     if (request.service_id == WLH_SERVICE_LINK &&
         request.method_id == WLH_LINK_METHOD_HEARTBEAT) {
-        wlh_protocol_v1_Heartbeat heartbeat =
-            wlh_protocol_v1_Heartbeat_init_zero;
+        wlh_protocol_v1_Heartbeat *heartbeat;
         pb_istream_t stream = pb_istream_from_buffer(message, message_size);
-        if (frame_header->session_id != coproc->session_id ||
-            !pb_decode(&stream, wlh_protocol_v1_Heartbeat_fields, &heartbeat) ||
-            heartbeat.session_id != coproc->session_id) {
+        bool valid;
+        heartbeat = (wlh_protocol_v1_Heartbeat *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*heartbeat)
+        );
+        if (heartbeat == NULL)
+            return WLH_COPROC_BACKEND_ERROR;
+        memset(heartbeat, 0, sizeof(*heartbeat));
+        valid =
+            frame_header->session_id == coproc->session_id &&
+            pb_decode(&stream, wlh_protocol_v1_Heartbeat_fields, heartbeat) &&
+            heartbeat->session_id == coproc->session_id;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)heartbeat
+        );
+        if (!valid) {
             return WLH_COPROC_PROTOCOL_ERROR;
         }
         return request.kind == WLH_RPC_KIND_REQUEST
@@ -559,40 +890,9 @@ static wlh_coproc_result_t handle_rpc(
     ++coproc->diagnostics.rpc_requests;
     if (request.service_id == WLH_SERVICE_LINK &&
         request.method_id == WLH_LINK_METHOD_HELLO) {
-        wlh_protocol_v1_HelloRequest hello =
-            wlh_protocol_v1_HelloRequest_init_zero;
-        pb_istream_t stream = pb_istream_from_buffer(message, message_size);
-        size_t i;
-        bool supports_v1 = false;
-        if (frame_header->session_id != 0u ||
-            !pb_decode(&stream, wlh_protocol_v1_HelloRequest_fields, &hello)) {
-            return WLH_COPROC_PROTOCOL_ERROR;
-        }
-        for (i = 0; i < hello.protocol_versions_count; ++i) {
-            if (hello.protocol_versions[i].major == 1u)
-                supports_v1 = true;
-        }
-        if (!supports_v1 || hello.max_frame_size < WLH_FRAME_HEADER_SIZE) {
-            return send_rpc(
-                coproc,
-                WLH_SERVICE_LINK,
-                WLH_LINK_METHOD_HELLO,
-                request.request_id,
-                WLH_RPC_KIND_RESPONSE,
-                WLH_STATUS_DOMAIN_PROTOCOL,
-                WLH_STATUS_VERSION_MISMATCH,
-                NULL,
-                0u
-            );
-        }
-        memset(coproc->tx_sequence, 0, sizeof(coproc->tx_sequence));
-        memset(coproc->rx_sequence_valid, 0, sizeof(coproc->rx_sequence_valid));
-        memset(
-            &coproc->wifi_initialize_pending,
-            0,
-            sizeof(coproc->wifi_initialize_pending)
+        return handle_hello_request(
+            coproc, frame_header, &request, message, message_size
         );
-        return send_hello_response(coproc, request.request_id);
     }
 
     if (coproc->state != WLH_COPROC_STATE_READY ||
@@ -647,106 +947,14 @@ static wlh_coproc_result_t handle_rpc(
     if (request.service_id == WLH_SERVICE_DEVICE_INFO &&
         request.method_id == WLH_DEVICE_INFO_METHOD_GET_INFO &&
         coproc->config.device_info.get_info != NULL) {
-        uint8_t response_data[wlh_protocol_v1_DeviceInfoResponse_size];
-        size_t response_size = 0;
-        int status;
-        wlh_coproc_device_info_t info;
-        wlh_protocol_v1_DeviceInfoResponse response =
-            wlh_protocol_v1_DeviceInfoResponse_init_zero;
-
-        memset(&info, 0, sizeof(info));
-        status = coproc->config.device_info.get_info(
-            coproc->config.device_info.context, &info
-        );
-        if (status != 0) {
-            return send_rpc(
-                coproc,
-                request.service_id,
-                request.method_id,
-                request.request_id,
-                WLH_RPC_KIND_RESPONSE,
-                WLH_STATUS_DOMAIN_DEVICE_INFO,
-                WLH_STATUS_INTERNAL,
-                NULL,
-                0u
-            );
-        }
-        /* The adapter contract is C strings; enforce termination and bounds
-         * before handing the fields to nanopb. */
-        info.vendor[sizeof(info.vendor) - 1u] = '\0';
-        info.mcu_model[sizeof(info.mcu_model) - 1u] = '\0';
-        info.board_profile[sizeof(info.board_profile) - 1u] = '\0';
-        if (info.uid_size > sizeof(info.uid))
-            info.uid_size = sizeof(info.uid);
-
-        memcpy(response.vendor, info.vendor, sizeof(response.vendor) - 1u);
-        memcpy(
-            response.mcu_model, info.mcu_model, sizeof(response.mcu_model) - 1u
-        );
-        memcpy(
-            response.board_profile,
-            info.board_profile,
-            sizeof(response.board_profile) - 1u
-        );
-        response.uid.size = info.uid_size;
-        memcpy(response.uid.bytes, info.uid, info.uid_size);
-        if (!encode_message(
-                response_data,
-                sizeof(response_data),
-                &response_size,
-                wlh_protocol_v1_DeviceInfoResponse_fields,
-                &response
-            )) {
-            return WLH_COPROC_PROTOCOL_ERROR;
-        }
-        return send_rpc(
-            coproc,
-            request.service_id,
-            request.method_id,
-            request.request_id,
-            WLH_RPC_KIND_RESPONSE,
-            0u,
-            0,
-            response_data,
-            response_size
-        );
+        return handle_device_info_request(coproc, &request);
     }
 
     if (request.service_id == WLH_SERVICE_USER_PASSTHROUGH &&
         request.method_id == WLH_USER_PASSTHROUGH_METHOD_SEND &&
         coproc->config.user_passthrough.on_message != NULL) {
-        int status;
-        wlh_coproc_user_message_t user_message;
-        wlh_protocol_v1_UserMessageSendRequest send_request =
-            wlh_protocol_v1_UserMessageSendRequest_init_zero;
-        pb_istream_t stream = pb_istream_from_buffer(message, message_size);
-        if (!pb_decode(
-                &stream,
-                wlh_protocol_v1_UserMessageSendRequest_fields,
-                &send_request
-            )) {
-            return WLH_COPROC_PROTOCOL_ERROR;
-        }
-        memset(&user_message, 0, sizeof(user_message));
-        user_message.endpoint_id = send_request.endpoint_id;
-        user_message.message_type = send_request.message_type;
-        user_message.flags = send_request.flags;
-        user_message.payload = send_request.payload.bytes;
-        user_message.payload_size = send_request.payload.size;
-        user_message.request_id = request.request_id;
-        status = coproc->config.user_passthrough.on_message(
-            coproc->config.user_passthrough.context, &user_message
-        );
-        return send_rpc(
-            coproc,
-            request.service_id,
-            request.method_id,
-            request.request_id,
-            WLH_RPC_KIND_RESPONSE,
-            status == 0 ? WLH_STATUS_DOMAIN_NONE : WLH_STATUS_DOMAIN_USER,
-            status == 0 ? WLH_STATUS_OK : WLH_STATUS_INTERNAL,
-            NULL,
-            0u
+        return handle_user_message_request(
+            coproc, &request, message, message_size
         );
     }
 
@@ -763,11 +971,11 @@ static wlh_coproc_result_t handle_rpc(
     );
 }
 
-static wlh_coproc_result_t coproc_emit_due_heartbeat(wlh_coproc_t *coproc);
+static WLH_NOINLINE wlh_coproc_result_t
+coproc_emit_due_heartbeat(wlh_coproc_t *coproc);
 static uint32_t coproc_next_wait_ms(const wlh_coproc_t *coproc);
-static wlh_coproc_result_t process_frame(
-    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
-);
+static WLH_NOINLINE wlh_coproc_result_t
+process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size);
 
 static void coproc_worker(void *argument) {
     wlh_coproc_t *coproc = argument;
@@ -976,11 +1184,10 @@ wlh_coproc_result_t wlh_coproc_stop(wlh_coproc_t *coproc) {
     return WLH_COPROC_OK;
 }
 
-static wlh_coproc_result_t coproc_emit_due_heartbeat(wlh_coproc_t *coproc) {
-    uint8_t payload[128];
-    size_t size = 0;
+static WLH_NOINLINE wlh_coproc_result_t
+coproc_emit_due_heartbeat(wlh_coproc_t *coproc) {
+    wlh_protocol_v1_Heartbeat *heartbeat;
     uint64_t now;
-    wlh_protocol_v1_Heartbeat heartbeat = wlh_protocol_v1_Heartbeat_init_zero;
 
     if (coproc == NULL) {
         return WLH_COPROC_INVALID_ARGUMENT;
@@ -990,19 +1197,16 @@ static wlh_coproc_result_t coproc_emit_due_heartbeat(wlh_coproc_t *coproc) {
     if (coproc->state == WLH_COPROC_STATE_READY &&
         now - coproc->last_heartbeat_ms >=
             coproc->config.heartbeat_interval_ms) {
-        heartbeat.session_id = coproc->session_id;
-        heartbeat.state = wlh_protocol_v1_LinkState_LINK_STATE_HEALTHY;
-        heartbeat.uptime_ms = now - coproc->started_ms;
-        heartbeat.monotonic_ms = now;
-
-        if (encode_message(
-                payload,
-                sizeof(payload),
-                &size,
-                wlh_protocol_v1_Heartbeat_fields,
-                &heartbeat
-            )) {
-            (void)send_rpc(
+        heartbeat = (wlh_protocol_v1_Heartbeat *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*heartbeat)
+        );
+        if (heartbeat != NULL) {
+            memset(heartbeat, 0, sizeof(*heartbeat));
+            heartbeat->session_id = coproc->session_id;
+            heartbeat->state = wlh_protocol_v1_LinkState_LINK_STATE_HEALTHY;
+            heartbeat->uptime_ms = now - coproc->started_ms;
+            heartbeat->monotonic_ms = now;
+            (void)send_rpc_message(
                 coproc,
                 WLH_SERVICE_LINK,
                 WLH_LINK_METHOD_HEARTBEAT,
@@ -1010,8 +1214,11 @@ static wlh_coproc_result_t coproc_emit_due_heartbeat(wlh_coproc_t *coproc) {
                 WLH_RPC_KIND_EVENT,
                 0u,
                 0,
-                payload,
-                size
+                wlh_protocol_v1_Heartbeat_fields,
+                heartbeat
+            );
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)heartbeat
             );
         }
         coproc->last_heartbeat_ms = now;
@@ -1036,9 +1243,8 @@ static uint32_t coproc_next_wait_ms(const wlh_coproc_t *coproc) {
     return (uint32_t)remaining;
 }
 
-static wlh_coproc_result_t process_frame(
-    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
-) {
+static WLH_NOINLINE wlh_coproc_result_t
+process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
     wlh_frame_header_t header;
     const uint8_t *payload;
     size_t payload_size;
@@ -1137,11 +1343,12 @@ static wlh_coproc_result_t send_event_message(
     const pb_msgdesc_t *fields,
     const void *message
 ) {
-    uint8_t payload[RPC_BUFFER_SIZE];
     size_t size = 0;
+    size_t encoded_size = 0;
     coproc_data_job_t *job;
 
-    if (!encode_message(payload, sizeof(payload), &size, fields, message)) {
+    if (!pb_get_encoded_size(&size, fields, message) ||
+        size > RPC_BUFFER_SIZE) {
         return WLH_COPROC_PROTOCOL_ERROR;
     }
     job = (coproc_data_job_t *)coproc->config.buffers.alloc(
@@ -1150,10 +1357,16 @@ static wlh_coproc_result_t send_event_message(
     if (job == NULL)
         return WLH_COPROC_BACKEND_ERROR;
     memset(job, 0, sizeof(*job));
+    if (!encode_message(job->data, size, &encoded_size, fields, message) ||
+        encoded_size != size) {
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)job
+        );
+        return WLH_COPROC_PROTOCOL_ERROR;
+    }
     job->method_id = method_id;
     job->service_id = service_id;
     job->size = size;
-    memcpy(job->data, payload, size);
     if (enqueue_job(coproc, COPROC_JOB_RPC_EVENT, job, WLH_OSAL_NO_WAIT) != 0) {
         coproc->config.buffers.free(
             coproc->config.buffers.context, (uint8_t *)job
@@ -1201,17 +1414,23 @@ wlh_coproc_result_t wlh_coproc_wifi_initialized(
 wlh_coproc_result_t wlh_coproc_wifi_scan_result(
     wlh_coproc_t *coproc, uint32_t scan_id, const wlh_coproc_bss_t *bss
 ) {
-    wlh_protocol_v1_WifiScanResultEvent event =
-        wlh_protocol_v1_WifiScanResultEvent_init_zero;
+    wlh_protocol_v1_WifiScanResultEvent *event;
     wlh_protocol_v1_WifiNetwork *network;
+    wlh_coproc_result_t result;
 
     if (coproc == NULL || bss == NULL || bss->ssid_size > 32u) {
         return WLH_COPROC_INVALID_ARGUMENT;
     }
 
-    event.scan_id = scan_id;
-    event.networks_count = 1u;
-    network = &event.networks[0];
+    event = (wlh_protocol_v1_WifiScanResultEvent *)coproc->config.buffers.alloc(
+        coproc->config.buffers.context, sizeof(*event)
+    );
+    if (event == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(event, 0, sizeof(*event));
+    event->scan_id = scan_id;
+    event->networks_count = 1u;
+    network = &event->networks[0];
 
     network->ssid.size = bss->ssid_size;
     memcpy(network->ssid.bytes, bss->ssid, bss->ssid_size);
@@ -1222,12 +1441,16 @@ wlh_coproc_result_t wlh_coproc_wifi_scan_result(
     network->channel = bss->channel;
     network->rssi_dbm = bss->rssi_dbm;
     network->security = (wlh_protocol_v1_WifiSecurity)bss->security;
-    return send_wifi_message(
+    result = send_wifi_message(
         coproc,
         WLH_WIFI_EVENT_SCAN_RESULT,
         wlh_protocol_v1_WifiScanResultEvent_fields,
-        &event
+        event
     );
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)event
+    );
+    return result;
 }
 
 wlh_coproc_result_t wlh_coproc_wifi_scan_completed(
@@ -1391,27 +1614,42 @@ wlh_coproc_result_t wlh_coproc_user_message_result(
     const uint8_t *payload,
     size_t payload_size
 ) {
-    wlh_protocol_v1_UserMessageResultEvent event =
-        wlh_protocol_v1_UserMessageResultEvent_init_zero;
+    wlh_protocol_v1_UserMessageResultEvent *event;
+    wlh_coproc_result_t send_result;
 
-    if (coproc == NULL || payload_size > sizeof(event.payload.bytes) ||
+    if (coproc == NULL ||
+        payload_size >
+            sizeof(
+                ((wlh_protocol_v1_UserMessageResultEvent *)0)->payload.bytes
+            ) ||
         (payload == NULL && payload_size != 0u)) {
         return WLH_COPROC_INVALID_ARGUMENT;
     }
-    event.endpoint_id = endpoint_id;
-    event.message_type = message_type;
-    event.correlation_id = correlation_id;
-    event.result = result;
-    event.payload.size = payload_size;
+    event =
+        (wlh_protocol_v1_UserMessageResultEvent *)coproc->config.buffers.alloc(
+            coproc->config.buffers.context, sizeof(*event)
+        );
+    if (event == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(event, 0, sizeof(*event));
+    event->endpoint_id = endpoint_id;
+    event->message_type = message_type;
+    event->correlation_id = correlation_id;
+    event->result = result;
+    event->payload.size = payload_size;
     if (payload_size != 0u)
-        memcpy(event.payload.bytes, payload, payload_size);
-    return send_event_message(
+        memcpy(event->payload.bytes, payload, payload_size);
+    send_result = send_event_message(
         coproc,
         WLH_SERVICE_USER_PASSTHROUGH,
         WLH_USER_PASSTHROUGH_EVENT_RESULT,
         wlh_protocol_v1_UserMessageResultEvent_fields,
-        &event
+        event
     );
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)event
+    );
+    return send_result;
 }
 
 void wlh_coproc_get_diagnostics(
