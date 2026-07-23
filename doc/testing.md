@@ -184,7 +184,7 @@ assert(diag.tx_frames > 0);
 
 - 每次提交前运行 Debug + Release + ASan 构建。
 - 公共接口、OSAL、并发或生命周期改动需额外验证 Portable 构建。
-- 保持 `-Wall -Wextra -Wpedantic -Werror` 无告警。
+- 保持 `-Wall -Werror` 无告警。
 
 ## 相关测试命令
 

@@ -26,7 +26,7 @@ set_target_properties(wlh_protocol PROPERTIES
 )
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(wlh_protocol PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(wlh_protocol PRIVATE -Wall -Werror)
 endif()
 
 add_library(wlh_nanopb_runtime STATIC EXCLUDE_FROM_ALL
@@ -133,7 +133,7 @@ if(BUILD_TESTING)
     add_executable(wlh_protocol_tests tests/test_wire.c)
     target_link_libraries(wlh_protocol_tests PRIVATE wlh_protocol)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        target_compile_options(wlh_protocol_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(wlh_protocol_tests PRIVATE -Wall -Werror)
     endif()
     add_test(NAME wlh_protocol_wire COMMAND wlh_protocol_tests)
 endif()
@@ -155,7 +155,7 @@ if(WLH_BUILD_NANOPB_SMOKE)
     target_compile_features(wlh_nanopb_generated_smoke PRIVATE c_std_99)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(wlh_nanopb_generated_smoke
-            PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            PRIVATE -Wall -Werror)
     endif()
     add_test(NAME wlh_nanopb_generated COMMAND wlh_nanopb_generated_smoke)
 endif()

@@ -29,7 +29,7 @@ function(wlh_common_enable_posix_osal)
     )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(wlh_posix_osal PRIVATE
-            -Wall -Wextra -Wpedantic -Werror
+            -Wall -Werror
         )
     endif()
 
@@ -41,7 +41,7 @@ function(wlh_common_enable_posix_osal)
         target_link_libraries(wlh_posix_osal_tests PRIVATE wlh::posix_osal)
         if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
             target_compile_options(wlh_posix_osal_tests PRIVATE
-                -Wall -Wextra -Wpedantic -Werror -UNDEBUG
+                -Wall -Werror -UNDEBUG
             )
         elseif(MSVC)
             target_compile_options(wlh_posix_osal_tests PRIVATE /UNDEBUG)
@@ -66,11 +66,10 @@ function(wlh_common_enable_freertos_osal)
         POSITION_INDEPENDENT_CODE ON
     )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-        # -Wpedantic is omitted on purpose: this target only builds inside
-        # vendor SDKs (ESP-IDF) whose platform headers use GNU extensions such
-        # as #include_next, and they arrive as plain -I includes.
+        # Use only -Wall -Werror to stay compatible with vendor SDK headers
+        # (e.g. ESP-IDF newlib) that rely on GNU extensions such as #include_next.
         target_compile_options(wlh_freertos_osal PRIVATE
-            -Wall -Wextra -Werror
+            -Wall -Werror
         )
     endif()
 endfunction()

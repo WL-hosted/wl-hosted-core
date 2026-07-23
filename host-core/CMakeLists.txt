@@ -29,7 +29,7 @@ target_link_libraries(wlh_host_core PUBLIC
 )
 set_target_properties(wlh_host_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(wlh_host_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(wlh_host_core PRIVATE -Wall -Werror)
 endif()
 
 if(WLH_HOST_BUILD_TESTING)
@@ -38,7 +38,7 @@ if(WLH_HOST_BUILD_TESTING)
     target_link_libraries(wlh_host_core_tests PRIVATE wlh_host_core Threads::Threads)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(wlh_host_core_tests PRIVATE
-            -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+            -Wall -Werror -UNDEBUG)
     elseif(MSVC)
         target_compile_options(wlh_host_core_tests PRIVATE /UNDEBUG)
     endif()

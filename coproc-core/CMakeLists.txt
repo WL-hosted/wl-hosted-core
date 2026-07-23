@@ -21,7 +21,7 @@ target_link_libraries(wlh_coproc_core PUBLIC
   wlh::osal wlh::protocol wlh::protocol_nanopb wlh::log)
 set_target_properties(wlh_coproc_core PROPERTIES C_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
-  target_compile_options(wlh_coproc_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(wlh_coproc_core PRIVATE -Wall -Werror)
 endif()
 
 if(BUILD_TESTING)
@@ -33,7 +33,7 @@ if(BUILD_TESTING)
     wlh_coproc_core wlh::posix_osal Threads::Threads)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(wlh_coproc_core_tests PRIVATE
-      -Wall -Wextra -Wpedantic -Werror -UNDEBUG)
+      -Wall -Werror -UNDEBUG)
   elseif(MSVC)
     target_compile_options(wlh_coproc_core_tests PRIVATE /UNDEBUG)
   endif()

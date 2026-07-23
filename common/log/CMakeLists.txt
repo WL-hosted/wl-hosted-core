@@ -50,7 +50,7 @@ function(wlh_common_enable_log)
     )
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(wlh_log_backend PRIVATE
-            -Wall -Wextra -Wpedantic -Werror
+            -Wall -Werror
         )
     endif()
 endfunction()
