@@ -29,6 +29,7 @@ wlh_host_result_t wlh_host_wifi_stop_ap(...);
 wlh_host_result_t wlh_host_get_device_info(...);
 wlh_host_result_t wlh_host_user_message_send(...);
 wlh_host_result_t wlh_host_ethernet_sta_send(...);
+wlh_host_result_t wlh_host_ethernet_ap_send(...);
 
 void wlh_host_get_diagnostics(const wlh_host_t *host, wlh_host_diagnostics_t *diagnostics);
 ```
@@ -94,6 +95,7 @@ typedef void (*wlh_host_event_fn)(void *context, const wlh_host_event_t *event);
 | `WLH_HOST_EVENT_WIFI_CONNECTED` | STA 已连接 |
 | `WLH_HOST_EVENT_WIFI_DISCONNECTED` | STA 已断开 |
 | `WLH_HOST_EVENT_ETHERNET_STA_RX` | 收到 Ethernet 帧 |
+| `WLH_HOST_EVENT_ETHERNET_AP_RX` | 收到 SoftAP Ethernet 帧 |
 | `WLH_HOST_EVENT_PROTOCOL_FAULT` | 协议错误 |
 | `WLH_HOST_EVENT_USER_MESSAGE_RESULT` | User Passthrough 结果事件 |
 | `WLH_HOST_EVENT_WIFI_AP_CLIENT_JOINED` | SoftAP 有客户端加入 |

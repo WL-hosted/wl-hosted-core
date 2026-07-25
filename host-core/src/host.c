@@ -52,6 +52,7 @@ typedef struct wlh_host_job {
 } wlh_host_job_t;
 
 typedef struct wlh_host_data_job {
+    uint8_t channel;
     size_t size;
     uint8_t data[];
 } wlh_host_data_job_t;
@@ -451,7 +452,7 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
         WLH_SERVICE_DIAGNOSTICS, 1u, 0u, 0u,
     };
 
-    hello->channels_count = 3u;
+    hello->channels_count = 4u;
     hello->channels[0] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_LINK_CONTROL, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
@@ -462,6 +463,10 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
 
     hello->channels[2] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_ETHERNET_STA, 1600u, 0u, 1u, 0u,
+    };
+
+    hello->channels[3] = (wlh_protocol_v1_ChannelCapability){
+        WLH_CHANNEL_ETHERNET_AP, 1600u, 0u, 1u, 0u,
     };
     // clang-format on
     memset(&envelope, 0, sizeof(envelope));
@@ -781,11 +786,7 @@ static void host_worker(void *argument) {
             } else if (job.kind == WLH_HOST_JOB_ETHERNET_TX) {
                 wlh_host_data_job_t *data = job.payload;
                 (void)send_payload_frame(
-                    host,
-                    WLH_CHANNEL_ETHERNET_STA,
-                    data->data,
-                    data->size,
-                    false
+                    host, data->channel, data->data, data->size, false
                 );
                 host->config.buffers.free(
                     host->config.buffers.context, (uint8_t *)data
@@ -1063,17 +1064,28 @@ static wlh_host_result_t process_frame(
     host->diagnostics.last_peer_activity_ms = now_ms(host);
 
     // Dispatch by channel.
-    if (header.channel == WLH_CHANNEL_ETHERNET_STA) {
-        if (frame_payload_size < 8u) {
+    if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
+        header.channel == WLH_CHANNEL_ETHERNET_AP) {
+        uint32_t raw_size;
+        if (frame_payload_size < 8u || frame_payload[0] != 1u ||
+            frame_payload[2] != 8u || frame_payload[3] != 0u) {
             return WLH_HOST_PROTOCOL_ERROR;
         }
+        raw_size = (uint32_t)frame_payload[4] |
+                   ((uint32_t)frame_payload[5] << 8) |
+                   ((uint32_t)frame_payload[6] << 16) |
+                   ((uint32_t)frame_payload[7] << 24);
+        if ((size_t)raw_size + 8u != frame_payload_size)
+            return WLH_HOST_PROTOCOL_ERROR;
         dispatch_event(
             host,
-            WLH_HOST_EVENT_ETHERNET_STA_RX,
+            header.channel == WLH_CHANNEL_ETHERNET_STA
+                ? WLH_HOST_EVENT_ETHERNET_STA_RX
+                : WLH_HOST_EVENT_ETHERNET_AP_RX,
             0u,
             0u,
             frame_payload + 8u,
-            frame_payload_size - 8u
+            raw_size
         );
         return WLH_HOST_OK;
     }
@@ -1634,8 +1646,11 @@ wlh_host_result_t wlh_host_user_message_send(
     return result;
 }
 
-wlh_host_result_t wlh_host_ethernet_sta_send(
-    wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+static wlh_host_result_t ethernet_send(
+    wlh_host_t *host,
+    uint8_t channel,
+    const uint8_t *ethernet_frame,
+    size_t size
 ) {
     uint8_t *record;
     if (host == NULL || ethernet_frame == NULL || size == 0u || size > 1600u ||
@@ -1648,6 +1663,7 @@ wlh_host_result_t wlh_host_ethernet_sta_send(
         return WLH_HOST_NO_MEMORY;
     {
         wlh_host_data_job_t *job = (wlh_host_data_job_t *)record;
+        job->channel = channel;
         job->size = 8u + size;
         job->data[0] = 1u;
         job->data[1] = 0u;
@@ -1664,6 +1680,18 @@ wlh_host_result_t wlh_host_ethernet_sta_send(
         }
     }
     return WLH_HOST_OK;
+}
+
+wlh_host_result_t wlh_host_ethernet_sta_send(
+    wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+) {
+    return ethernet_send(host, WLH_CHANNEL_ETHERNET_STA, ethernet_frame, size);
+}
+
+wlh_host_result_t wlh_host_ethernet_ap_send(
+    wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+) {
+    return ethernet_send(host, WLH_CHANNEL_ETHERNET_AP, ethernet_frame, size);
 }
 
 void wlh_host_get_diagnostics(

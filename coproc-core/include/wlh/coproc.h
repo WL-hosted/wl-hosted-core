@@ -54,6 +54,7 @@ typedef struct wlh_coproc_port {
     wlh_coproc_submit_tx_fn submit_tx;
     /* Must copy/enqueue the frame and return without running the net stack. */
     wlh_coproc_ethernet_rx_fn ethernet_rx;
+    wlh_coproc_ethernet_rx_fn ethernet_ap_rx;
 } wlh_coproc_port_t;
 
 typedef uint8_t *(*wlh_coproc_buffer_alloc_fn)(void *context, size_t size);
@@ -246,6 +247,12 @@ wlh_coproc_result_t wlh_coproc_wifi_connected(
 wlh_coproc_result_t wlh_coproc_wifi_disconnected(
     wlh_coproc_t *coproc, uint32_t reason, bool locally_initiated
 );
+wlh_coproc_result_t wlh_coproc_wifi_ap_started(
+    wlh_coproc_t *coproc, const wlh_coproc_bss_t *ap
+);
+wlh_coproc_result_t wlh_coproc_wifi_ap_stopped(
+    wlh_coproc_t *coproc, uint32_t reason, bool locally_initiated
+);
 wlh_coproc_result_t wlh_coproc_wifi_ap_client_joined(
     wlh_coproc_t *coproc,
     const uint8_t mac[6],
@@ -259,6 +266,9 @@ wlh_coproc_result_t wlh_coproc_wifi_ap_client_left(
     uint32_t ieee80211_reason
 );
 wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
+    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+);
+wlh_coproc_result_t wlh_coproc_ethernet_ap_send(
     wlh_coproc_t *coproc, const uint8_t *frame, size_t size
 );
 /* Emit a USER_PASSTHROUGH RESULT event. Nonblocking ingress, callable from

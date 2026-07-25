@@ -38,6 +38,7 @@ typedef struct coproc_job {
 typedef struct coproc_data_job {
     uint16_t method_id;
     uint16_t service_id;
+    uint8_t channel;
     size_t size;
     uint8_t data[];
 } coproc_data_job_t;
@@ -326,9 +327,9 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
     response->max_frame_size = coproc->config.max_frame_size;
     response->alignment = 1u;
     response->checksum_mode = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
-    response->initial_credits_count = 3u;
+    response->initial_credits_count = 4u;
 
-    for (i = 0; i < 3u; ++i) {
+    for (i = 0; i < 4u; ++i) {
         response->initial_credits[i].channel_id = (uint32_t)i;
         response->initial_credits[i].units = coproc->config.initial_credit;
         response->initial_credits[i].unit_bytes = 1u;
@@ -1066,7 +1067,7 @@ static void coproc_worker(void *argument) {
             } else if (job.kind == COPROC_JOB_ETHERNET_TX) {
                 coproc_data_job_t *data = job.payload;
                 (void)send_payload(
-                    coproc, WLH_CHANNEL_ETHERNET_STA, data->data, data->size
+                    coproc, data->channel, data->data, data->size
                 );
                 coproc->config.buffers.free(
                     coproc->config.buffers.context, (uint8_t *)data
@@ -1293,7 +1294,8 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         return handle_rpc(coproc, &header, payload, payload_size);
     }
 
-    if (header.channel == WLH_CHANNEL_ETHERNET_STA &&
+    if ((header.channel == WLH_CHANNEL_ETHERNET_STA ||
+         header.channel == WLH_CHANNEL_ETHERNET_AP) &&
         payload_size >= RAW_HEADER_SIZE && payload[0] == 1u &&
         payload[2] == 8u && payload[3] == 0u) {
         uint32_t raw_size = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
@@ -1303,8 +1305,12 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
             return WLH_COPROC_PROTOCOL_ERROR;
         }
 
-        if (coproc->config.port.ethernet_rx != NULL) {
-            coproc->config.port.ethernet_rx(
+        wlh_coproc_ethernet_rx_fn receive =
+            header.channel == WLH_CHANNEL_ETHERNET_STA
+                ? coproc->config.port.ethernet_rx
+                : coproc->config.port.ethernet_ap_rx;
+        if (receive != NULL) {
+            receive(
                 coproc->config.port.context, payload + RAW_HEADER_SIZE, raw_size
             );
         }
@@ -1524,6 +1530,51 @@ wlh_coproc_result_t wlh_coproc_wifi_disconnected(
     );
 }
 
+wlh_coproc_result_t wlh_coproc_wifi_ap_started(
+    wlh_coproc_t *coproc, const wlh_coproc_bss_t *ap
+) {
+    wlh_protocol_v1_WifiConnectedEvent event =
+        wlh_protocol_v1_WifiConnectedEvent_init_zero;
+
+    if (coproc == NULL || ap == NULL)
+        return WLH_COPROC_INVALID_ARGUMENT;
+    event.has_link = true;
+    event.link.interface = wlh_protocol_v1_WifiInterface_WIFI_INTERFACE_AP;
+    event.link.connected = true;
+    event.link.ssid.size = ap->ssid_size;
+    memcpy(event.link.ssid.bytes, ap->ssid, ap->ssid_size);
+    event.link.bssid.size = 6u;
+    memcpy(event.link.bssid.bytes, ap->bssid, 6u);
+    event.link.mac.size = 6u;
+    memcpy(event.link.mac.bytes, ap->interface_mac, 6u);
+    event.link.channel = ap->channel;
+    event.link.security = (wlh_protocol_v1_WifiSecurity)ap->security;
+    return send_wifi_message(
+        coproc,
+        WLH_WIFI_EVENT_CONNECTED,
+        wlh_protocol_v1_WifiConnectedEvent_fields,
+        &event
+    );
+}
+
+wlh_coproc_result_t wlh_coproc_wifi_ap_stopped(
+    wlh_coproc_t *coproc, uint32_t reason, bool locally_initiated
+) {
+    wlh_protocol_v1_WifiDisconnectedEvent event =
+        wlh_protocol_v1_WifiDisconnectedEvent_init_zero;
+    if (coproc == NULL)
+        return WLH_COPROC_INVALID_ARGUMENT;
+    event.interface = wlh_protocol_v1_WifiInterface_WIFI_INTERFACE_AP;
+    event.reason = (wlh_protocol_v1_WifiDisconnectReason)reason;
+    event.locally_initiated = locally_initiated;
+    return send_wifi_message(
+        coproc,
+        WLH_WIFI_EVENT_DISCONNECTED,
+        wlh_protocol_v1_WifiDisconnectedEvent_fields,
+        &event
+    );
+}
+
 wlh_coproc_result_t wlh_coproc_wifi_ap_client_joined(
     wlh_coproc_t *coproc,
     const uint8_t mac[6],
@@ -1575,8 +1626,8 @@ wlh_coproc_result_t wlh_coproc_wifi_ap_client_left(
     );
 }
 
-wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
-    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+static wlh_coproc_result_t ethernet_send(
+    wlh_coproc_t *coproc, uint8_t channel, const uint8_t *frame, size_t size
 ) {
     coproc_data_job_t *job;
 
@@ -1592,6 +1643,7 @@ wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
     if (job == NULL)
         return WLH_COPROC_BACKEND_ERROR;
     memset(job, 0, sizeof(*job));
+    job->channel = channel;
     job->size = RAW_HEADER_SIZE + size;
     job->data[0] = 1u;
     job->data[2] = 8u;
@@ -1608,6 +1660,18 @@ wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
         return WLH_COPROC_BACKEND_ERROR;
     }
     return WLH_COPROC_OK;
+}
+
+wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
+    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+) {
+    return ethernet_send(coproc, WLH_CHANNEL_ETHERNET_STA, frame, size);
+}
+
+wlh_coproc_result_t wlh_coproc_ethernet_ap_send(
+    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+) {
+    return ethernet_send(coproc, WLH_CHANNEL_ETHERNET_AP, frame, size);
 }
 
 wlh_coproc_result_t wlh_coproc_user_message_result(

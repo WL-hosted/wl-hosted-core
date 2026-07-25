@@ -595,11 +595,13 @@ static void establish_ready(fixture_t *fixture) {
     hello.alignment = 1u;
     hello.checksum_mode = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
 
-    hello.initial_credits_count = 2u;
+    hello.initial_credits_count = 3u;
     hello.initial_credits[0] =
         (wlh_protocol_v1_InitialCredit){WLH_CHANNEL_CONTROL_RPC, 8u, 1u};
     hello.initial_credits[1] =
         (wlh_protocol_v1_InitialCredit){WLH_CHANNEL_ETHERNET_STA, 2u, 1u};
+    hello.initial_credits[2] =
+        (wlh_protocol_v1_InitialCredit){WLH_CHANNEL_ETHERNET_AP, 2u, 1u};
     assert(pb_encode(&stream, wlh_protocol_v1_HelloResponse_fields, &hello));
     frame_size = make_rpc_frame(
         frame,
@@ -753,6 +755,58 @@ static void test_timeout_credit_and_session(void) {
         request_id != 0u && service == WLH_SERVICE_LINK &&
         method == WLH_LINK_METHOD_HELLO
     );
+    assert(wlh_host_stop(&fixture.host) == WLH_HOST_OK);
+}
+
+static void test_ap_ethernet(void) {
+    fixture_t fixture;
+    uint8_t frame[4096];
+    uint8_t raw[11] = {1u, 0u, 8u, 0u, 3u, 0u, 0u, 0u, 1u, 2u, 3u};
+    uint8_t ethernet[60] = {0};
+    wlh_frame_header_t header;
+    const uint8_t *payload;
+    size_t frame_size = 0u;
+    size_t payload_size = 0u;
+    unsigned events_before;
+    unsigned tx_before;
+
+    fixture_init(&fixture);
+    establish_ready(&fixture);
+    events_before = fixture.events;
+    wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_AP);
+    header.session_id = 42u;
+    assert(
+        wlh_frame_encode(
+            frame, sizeof(frame), &frame_size, &header, raw, sizeof(raw)
+        ) == WLH_WIRE_OK
+    );
+    assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
+    while (fixture.events == events_before)
+        wait_milliseconds(1u);
+    assert(fixture.last_event_kind == WLH_HOST_EVENT_ETHERNET_AP_RX);
+    assert(
+        fixture.last_event_payload_size == 3u &&
+        memcmp(fixture.last_event_payload, raw + 8u, 3u) == 0
+    );
+
+    tx_before = fixture.tx_count;
+    assert(
+        wlh_host_ethernet_ap_send(&fixture.host, ethernet, sizeof(ethernet)) ==
+        WLH_HOST_OK
+    );
+    wait_for_tx(&fixture, tx_before + 1u);
+    assert(
+        wlh_frame_decode(
+            &header,
+            &payload,
+            &payload_size,
+            fixture.tx,
+            fixture.tx_size,
+            sizeof(fixture.tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(header.channel == WLH_CHANNEL_ETHERNET_AP);
+    assert(payload_size == sizeof(ethernet) + 8u);
     assert(wlh_host_stop(&fixture.host) == WLH_HOST_OK);
 }
 
@@ -1324,6 +1378,7 @@ static void test_large_message_allocation_failures(void) {
 int main(void) {
     test_handshake_and_rpc();
     test_timeout_credit_and_session();
+    test_ap_ethernet();
     test_asynchronous_transport_start();
     test_device_info_and_user_passthrough();
     test_wifi_softap();

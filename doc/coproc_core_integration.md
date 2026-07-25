@@ -18,6 +18,7 @@ wlh_coproc_result_t wlh_coproc_wifi_disconnected(...);
 wlh_coproc_result_t wlh_coproc_wifi_ap_client_joined(...);
 wlh_coproc_result_t wlh_coproc_wifi_ap_client_left(...);
 wlh_coproc_result_t wlh_coproc_ethernet_sta_send(...);
+wlh_coproc_result_t wlh_coproc_ethernet_ap_send(...);
 wlh_coproc_result_t wlh_coproc_user_message_result(...);
 
 void wlh_coproc_get_diagnostics(const wlh_coproc_t *coproc, wlh_coproc_diagnostics_t *diagnostics);

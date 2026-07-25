@@ -31,6 +31,7 @@ typedef struct fixture {
     uint64_t now;
     int initialized;
     size_t ethernet_size;
+    size_t ethernet_ap_size;
     unsigned sent_count;
     int device_info_queries;
     wlh_coproc_device_info_t device_info;
@@ -98,6 +99,10 @@ static void failing_buffer_free(void *context, uint8_t *buffer) {
 static void ethernet_rx(void *context, const uint8_t *frame, size_t size) {
     (void)frame;
     ((fixture_t *)context)->ethernet_size = size;
+}
+static void ethernet_ap_rx(void *context, const uint8_t *frame, size_t size) {
+    (void)frame;
+    ((fixture_t *)context)->ethernet_ap_size = size;
 }
 static int wifi_init(
     void *context, uint32_t operation_id, uint32_t interface_flags
@@ -230,6 +235,7 @@ static void test_hello_wifi_and_ethernet(void) {
     config.port.context = &f;
     config.port.submit_tx = submit_frame;
     config.port.ethernet_rx = ethernet_rx;
+    config.port.ethernet_ap_rx = ethernet_ap_rx;
     config.buffers = (wlh_coproc_buffer_ops_t){&f, buffer_alloc, buffer_free};
     config.osal = wlh_posix_osal_ops(&f.posix);
 
@@ -286,7 +292,7 @@ static void test_hello_wifi_and_ethernet(void) {
     CHECK(rpc.request_id == 7 && rpc.kind == WLH_RPC_KIND_RESPONSE);
     stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
     CHECK(pb_decode(&stream, wlh_protocol_v1_HelloResponse_fields, &response));
-    CHECK(response.session_id == 42 && response.initial_credits_count == 3);
+    CHECK(response.session_id == 42 && response.initial_credits_count == 4);
 
     {
         unsigned sent_before = f.sent_count;
@@ -385,6 +391,42 @@ static void test_hello_wifi_and_ethernet(void) {
                 wait_milliseconds(1u);
         }
         CHECK(f.ethernet_size == 3);
+    }
+    {
+        uint8_t raw[11] = {1, 0, 8, 0, 3, 0, 0, 0, 4, 5, 6};
+        wlh_frame_header_t header;
+        size_t size = 0;
+        unsigned sent_before = f.sent_count;
+        wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_AP);
+        header.session_id = 42;
+        CHECK(
+            wlh_frame_encode(
+                incoming, sizeof(incoming), &size, &header, raw, sizeof(raw)
+            ) == WLH_WIRE_OK
+        );
+        CHECK(wlh_coproc_on_frame(&core, incoming, size) == WLH_COPROC_OK);
+        {
+            unsigned attempt;
+            for (attempt = 0; attempt < 1000u && f.ethernet_ap_size != 3u;
+                 ++attempt)
+                wait_milliseconds(1u);
+        }
+        CHECK(f.ethernet_ap_size == 3u);
+        CHECK(
+            wlh_coproc_ethernet_ap_send(&core, raw + 8u, 3u) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        CHECK(
+            wlh_frame_decode(
+                &header,
+                &frame_payload,
+                &frame_payload_size,
+                f.sent,
+                f.sent_size,
+                4096
+            ) == WLH_WIRE_OK
+        );
+        CHECK(header.channel == WLH_CHANNEL_ETHERNET_AP);
     }
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }

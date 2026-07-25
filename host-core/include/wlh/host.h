@@ -55,7 +55,8 @@ typedef enum wlh_host_event_kind {
     WLH_HOST_EVENT_PROTOCOL_FAULT,
     WLH_HOST_EVENT_USER_MESSAGE_RESULT,
     WLH_HOST_EVENT_WIFI_AP_CLIENT_JOINED,
-    WLH_HOST_EVENT_WIFI_AP_CLIENT_LEFT
+    WLH_HOST_EVENT_WIFI_AP_CLIENT_LEFT,
+    WLH_HOST_EVENT_ETHERNET_AP_RX
 } wlh_host_event_kind_t;
 
 typedef struct wlh_host_event {
@@ -319,6 +320,9 @@ wlh_host_result_t wlh_host_user_message_send(
 );
 
 wlh_host_result_t wlh_host_ethernet_sta_send(
+    wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+);
+wlh_host_result_t wlh_host_ethernet_ap_send(
     wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
 );
 
