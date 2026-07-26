@@ -297,6 +297,27 @@ static WLH_NOINLINE wlh_coproc_result_t send_rpc_message(
     return result;
 }
 
+static wlh_coproc_result_t send_credit_update(
+    wlh_coproc_t *coproc, uint8_t channel
+) {
+    wlh_protocol_v1_CreditUpdate update =
+        wlh_protocol_v1_CreditUpdate_init_zero;
+
+    update.channel_id = channel;
+    update.units = 1u;
+    return send_rpc_message(
+        coproc,
+        WLH_SERVICE_LINK,
+        WLH_LINK_METHOD_CREDIT_UPDATE,
+        0u,
+        WLH_RPC_KIND_EVENT,
+        0u,
+        0,
+        wlh_protocol_v1_CreditUpdate_fields,
+        &update
+    );
+}
+
 static WLH_NOINLINE wlh_coproc_result_t
 send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
     wlh_protocol_v1_HelloResponse *response;
@@ -1018,7 +1039,15 @@ static void coproc_worker(void *argument) {
                 coproc->worker_stopping = true;
             } else if (job.kind == COPROC_JOB_RX_FRAME) {
                 coproc_data_job_t *data = job.payload;
-                (void)process_frame(coproc, data->data, data->size);
+                wlh_coproc_result_t result =
+                    process_frame(coproc, data->data, data->size);
+                if (result != WLH_COPROC_OK) {
+                    WLH_LOGW(
+                        "wlh_coproc",
+                        "RX frame processing failed: %d",
+                        (int)result
+                    );
+                }
                 coproc->config.buffers.free(
                     coproc->config.buffers.context, (uint8_t *)data
                 );
@@ -1294,27 +1323,43 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         return handle_rpc(coproc, &header, payload, payload_size);
     }
 
-    if ((header.channel == WLH_CHANNEL_ETHERNET_STA ||
-         header.channel == WLH_CHANNEL_ETHERNET_AP) &&
-        payload_size >= RAW_HEADER_SIZE && payload[0] == 1u &&
-        payload[2] == 8u && payload[3] == 0u) {
-        uint32_t raw_size = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
-                            ((uint32_t)payload[6] << 16) |
-                            ((uint32_t)payload[7] << 24);
-        if ((size_t)raw_size + RAW_HEADER_SIZE != payload_size) {
-            return WLH_COPROC_PROTOCOL_ERROR;
-        }
+    if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
+        header.channel == WLH_CHANNEL_ETHERNET_AP) {
+        bool payload_valid = payload_size >= RAW_HEADER_SIZE &&
+                             payload[0] == 1u && payload[2] == 8u &&
+                             payload[3] == 0u;
+        uint32_t raw_size = 0u;
 
-        wlh_coproc_ethernet_rx_fn receive =
-            header.channel == WLH_CHANNEL_ETHERNET_STA
-                ? coproc->config.port.ethernet_rx
-                : coproc->config.port.ethernet_ap_rx;
-        if (receive != NULL) {
-            receive(
-                coproc->config.port.context, payload + RAW_HEADER_SIZE, raw_size
+        if (payload_valid) {
+            raw_size = (uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
+                       ((uint32_t)payload[6] << 16) |
+                       ((uint32_t)payload[7] << 24);
+            payload_valid = (size_t)raw_size + RAW_HEADER_SIZE == payload_size;
+        }
+        if (payload_valid) {
+            wlh_coproc_ethernet_rx_fn receive =
+                header.channel == WLH_CHANNEL_ETHERNET_STA
+                    ? coproc->config.port.ethernet_rx
+                    : coproc->config.port.ethernet_ap_rx;
+            if (receive != NULL) {
+                receive(
+                    coproc->config.port.context,
+                    payload + RAW_HEADER_SIZE,
+                    raw_size
+                );
+            }
+        } else {
+            WLH_LOGW(
+                "wlh_coproc",
+                "malformed raw record on channel %u (%zu bytes)",
+                (unsigned)header.channel,
+                payload_size
             );
         }
-        return WLH_COPROC_OK;
+        /* Return the credit even when the payload is rejected, so a transient
+           fault cannot permanently strand the peer in CONGESTED. */
+        (void)send_credit_update(coproc, header.channel);
+        return payload_valid ? WLH_COPROC_OK : WLH_COPROC_PROTOCOL_ERROR;
     }
 
     return WLH_COPROC_PROTOCOL_ERROR;
@@ -1642,7 +1687,10 @@ static wlh_coproc_result_t ethernet_send(
     );
     if (job == NULL)
         return WLH_COPROC_BACKEND_ERROR;
-    memset(job, 0, sizeof(*job));
+    /* Zero the raw header too: it lives in the flexible array member, which
+       sizeof(*job) does not cover. Leaving data[1]/data[3] as heap garbage
+       makes the peer reject the frame and leak a credit per drop. */
+    memset(job, 0, sizeof(*job) + RAW_HEADER_SIZE);
     job->channel = channel;
     job->size = RAW_HEADER_SIZE + size;
     job->data[0] = 1u;

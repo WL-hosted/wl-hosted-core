@@ -114,7 +114,7 @@ static void completion_task_run(void *context) {
     );
 }
 
-static void dispatch_event(
+static bool dispatch_event(
     wlh_host_t *host,
     wlh_host_event_kind_t kind,
     uint16_t service_id,
@@ -129,7 +129,7 @@ static void dispatch_event(
     if (task == NULL) {
         host->diagnostics.buffer_allocation_failures++;
         WLH_LOGW("wlh_host", "event buffer allocation failed");
-        return;
+        return false;
     }
     memset(task, 0, sizeof(*task));
     task->host = host;
@@ -149,7 +149,10 @@ static void dispatch_event(
         host->config.buffers.free(
             host->config.buffers.context, (uint8_t *)task
         );
+        WLH_LOGW("wlh_host", "event executor queue full");
+        return false;
     }
+    return true;
 }
 
 static void dispatch_completion(
@@ -407,6 +410,22 @@ static wlh_host_result_t send_rpc_message(
     }
     host->config.buffers.free(host->config.buffers.context, payload);
     return result;
+}
+
+static wlh_host_result_t send_credit_update(wlh_host_t *host, uint8_t channel) {
+    wlh_rpc_envelope_t envelope;
+    wlh_protocol_v1_CreditUpdate update =
+        wlh_protocol_v1_CreditUpdate_init_zero;
+
+    memset(&envelope, 0, sizeof(envelope));
+    envelope.service_id = WLH_SERVICE_LINK;
+    envelope.method_id = WLH_LINK_METHOD_CREDIT_UPDATE;
+    envelope.kind = WLH_RPC_KIND_EVENT;
+    update.channel_id = channel;
+    update.units = 1u;
+    return send_rpc_message(
+        host, &envelope, wlh_protocol_v1_CreditUpdate_fields, &update, true
+    );
 }
 
 static wlh_host_result_t send_hello(wlh_host_t *host) {
@@ -1066,28 +1085,54 @@ static wlh_host_result_t process_frame(
     // Dispatch by channel.
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
         header.channel == WLH_CHANNEL_ETHERNET_AP) {
-        uint32_t raw_size;
-        if (frame_payload_size < 8u || frame_payload[0] != 1u ||
-            frame_payload[2] != 8u || frame_payload[3] != 0u) {
+        bool event_dispatched = false;
+        bool payload_valid;
+        uint32_t raw_size = 0u;
+        wlh_host_result_t credit_result;
+
+        payload_valid = frame_payload_size >= 8u && frame_payload[0] == 1u &&
+                        frame_payload[2] == 8u && frame_payload[3] == 0u;
+        if (payload_valid) {
+            raw_size = (uint32_t)frame_payload[4] |
+                       ((uint32_t)frame_payload[5] << 8) |
+                       ((uint32_t)frame_payload[6] << 16) |
+                       ((uint32_t)frame_payload[7] << 24);
+            payload_valid = (size_t)raw_size + 8u == frame_payload_size;
+        }
+        if (payload_valid) {
+            event_dispatched = dispatch_event(
+                host,
+                header.channel == WLH_CHANNEL_ETHERNET_STA
+                    ? WLH_HOST_EVENT_ETHERNET_STA_RX
+                    : WLH_HOST_EVENT_ETHERNET_AP_RX,
+                0u,
+                0u,
+                frame_payload + 8u,
+                raw_size
+            );
+        }
+        /* Return the credit even when the payload is rejected. The peer spent
+           one credit to deliver this frame; withholding it on a drop turns a
+           transient fault into a permanent CONGESTED stall. */
+        credit_result = send_credit_update(host, header.channel);
+        if (credit_result != WLH_HOST_OK) {
+            WLH_LOGW(
+                "wlh_host",
+                "credit update failed on channel %u: %d",
+                (unsigned)header.channel,
+                (int)credit_result
+            );
+        }
+        if (!payload_valid) {
+            WLH_LOGW(
+                "wlh_host",
+                "malformed raw record on channel %u (%zu bytes)",
+                (unsigned)header.channel,
+                frame_payload_size
+            );
             return WLH_HOST_PROTOCOL_ERROR;
         }
-        raw_size = (uint32_t)frame_payload[4] |
-                   ((uint32_t)frame_payload[5] << 8) |
-                   ((uint32_t)frame_payload[6] << 16) |
-                   ((uint32_t)frame_payload[7] << 24);
-        if ((size_t)raw_size + 8u != frame_payload_size)
-            return WLH_HOST_PROTOCOL_ERROR;
-        dispatch_event(
-            host,
-            header.channel == WLH_CHANNEL_ETHERNET_STA
-                ? WLH_HOST_EVENT_ETHERNET_STA_RX
-                : WLH_HOST_EVENT_ETHERNET_AP_RX,
-            0u,
-            0u,
-            frame_payload + 8u,
-            raw_size
-        );
-        return WLH_HOST_OK;
+        return event_dispatched ? WLH_HOST_OK : WLH_HOST_NO_MEMORY;
     }
     if (header.channel == WLH_CHANNEL_LINK_CONTROL ||
         header.channel == WLH_CHANNEL_CONTROL_RPC) {

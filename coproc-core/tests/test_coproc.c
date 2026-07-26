@@ -60,8 +60,13 @@ static int submit_frame(
     return 0;
 }
 static uint8_t *buffer_alloc(void *context, size_t size) {
+    uint8_t *buffer = malloc(size);
     (void)context;
-    return malloc(size);
+    /* Poison the allocation so any byte the core forgets to initialize shows
+       up in the emitted frame instead of silently reading back as zero. */
+    if (buffer != NULL)
+        memset(buffer, 0xa5, size);
+    return buffer;
 }
 static void buffer_free(void *context, uint8_t *buffer) {
     (void)context;
@@ -96,6 +101,29 @@ static void failing_buffer_free(void *context, uint8_t *buffer) {
         --allocator->outstanding;
     free(buffer);
 }
+/* Validate an emitted Ethernet payload exactly the way the peer does, so an
+   uninitialized raw-header byte fails here instead of on hardware. */
+static void check_raw_record(
+    const uint8_t *payload,
+    size_t payload_size,
+    const uint8_t *expected,
+    size_t expected_size
+) {
+    CHECK(payload_size == expected_size + 8u);
+    if (payload_size != expected_size + 8u)
+        return;
+    CHECK(payload[0] == 1u);
+    CHECK(payload[1] == 0u);
+    CHECK(payload[2] == 8u);
+    CHECK(payload[3] == 0u);
+    CHECK(
+        ((uint32_t)payload[4] | ((uint32_t)payload[5] << 8) |
+         ((uint32_t)payload[6] << 16) | ((uint32_t)payload[7] << 24)) ==
+        (uint32_t)expected_size
+    );
+    CHECK(memcmp(payload + 8u, expected, expected_size) == 0);
+}
+
 static void ethernet_rx(void *context, const uint8_t *frame, size_t size) {
     (void)frame;
     ((fixture_t *)context)->ethernet_size = size;
@@ -375,7 +403,10 @@ static void test_hello_wifi_and_ethernet(void) {
     {
         uint8_t raw[11] = {1, 0, 8, 0, 3, 0, 0, 0, 1, 2, 3};
         wlh_frame_header_t header;
+        wlh_protocol_v1_CreditUpdate update =
+            wlh_protocol_v1_CreditUpdate_init_zero;
         size_t size = 0;
+        unsigned sent_before = f.sent_count;
         wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_STA);
         header.session_id = 42;
         CHECK(
@@ -391,6 +422,38 @@ static void test_hello_wifi_and_ethernet(void) {
                 wait_milliseconds(1u);
         }
         CHECK(f.ethernet_size == 3);
+        wait_for_sent(&f, sent_before + 1u);
+        CHECK(
+            wlh_frame_decode(
+                &header,
+                &frame_payload,
+                &frame_payload_size,
+                f.sent,
+                f.sent_size,
+                4096
+            ) == WLH_WIRE_OK
+        );
+        CHECK(header.channel == WLH_CHANNEL_LINK_CONTROL);
+        CHECK(
+            wlh_rpc_decode(
+                &rpc,
+                &rpc_payload,
+                &rpc_payload_size,
+                frame_payload,
+                frame_payload_size,
+                1536
+            ) == WLH_WIRE_OK
+        );
+        CHECK(
+            rpc.service_id == WLH_SERVICE_LINK &&
+            rpc.method_id == WLH_LINK_METHOD_CREDIT_UPDATE &&
+            rpc.kind == WLH_RPC_KIND_EVENT
+        );
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        CHECK(pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &update));
+        CHECK(
+            update.channel_id == WLH_CHANNEL_ETHERNET_STA && update.units == 1u
+        );
     }
     {
         uint8_t raw[11] = {1, 0, 8, 0, 3, 0, 0, 0, 4, 5, 6};
@@ -415,7 +478,7 @@ static void test_hello_wifi_and_ethernet(void) {
         CHECK(
             wlh_coproc_ethernet_ap_send(&core, raw + 8u, 3u) == WLH_COPROC_OK
         );
-        wait_for_sent(&f, sent_before + 1u);
+        wait_for_sent(&f, sent_before + 2u);
         CHECK(
             wlh_frame_decode(
                 &header,
@@ -427,6 +490,35 @@ static void test_hello_wifi_and_ethernet(void) {
             ) == WLH_WIRE_OK
         );
         CHECK(header.channel == WLH_CHANNEL_ETHERNET_AP);
+        check_raw_record(frame_payload, frame_payload_size, raw + 8u, 3u);
+    }
+    {
+        /* The STA send path builds the same 8-byte raw record. Both are
+           checked byte for byte: the header lives in a flexible array member,
+           so a sizeof(*job)-sized memset leaves bytes 1 and 3 poisoned and the
+           peer drops every frame, leaking a credit each time. */
+        uint8_t payload[3] = {7, 8, 9};
+        wlh_frame_header_t header;
+        unsigned sent_before = f.sent_count;
+        CHECK(
+            wlh_coproc_ethernet_sta_send(&core, payload, sizeof(payload)) ==
+            WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        CHECK(
+            wlh_frame_decode(
+                &header,
+                &frame_payload,
+                &frame_payload_size,
+                f.sent,
+                f.sent_size,
+                4096
+            ) == WLH_WIRE_OK
+        );
+        CHECK(header.channel == WLH_CHANNEL_ETHERNET_STA);
+        check_raw_record(
+            frame_payload, frame_payload_size, payload, sizeof(payload)
+        );
     }
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }

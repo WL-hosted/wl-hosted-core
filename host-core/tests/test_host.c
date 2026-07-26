@@ -343,6 +343,7 @@ typedef struct fixture {
     wlh_host_result_t device_info_result;
     wlh_host_device_info_t device_info;
     bool defer_start;
+    bool reject_executor;
     wlh_transport_lifecycle_complete_fn start_completion;
     void *start_completion_context;
 } fixture_t;
@@ -423,7 +424,9 @@ static void failing_buffer_free(void *context, uint8_t *buffer) {
     free(buffer);
 }
 static int post_now(void *context, wlh_task_fn task, void *task_context) {
-    (void)context;
+    fixture_t *fixture = context;
+    if (fixture->reject_executor)
+        return -1;
     task(task_context);
     return 0;
 }
@@ -764,9 +767,15 @@ static void test_ap_ethernet(void) {
     uint8_t raw[11] = {1u, 0u, 8u, 0u, 3u, 0u, 0u, 0u, 1u, 2u, 3u};
     uint8_t ethernet[60] = {0};
     wlh_frame_header_t header;
+    wlh_rpc_envelope_t rpc;
+    wlh_protocol_v1_CreditUpdate update =
+        wlh_protocol_v1_CreditUpdate_init_zero;
     const uint8_t *payload;
+    const uint8_t *rpc_payload;
     size_t frame_size = 0u;
     size_t payload_size = 0u;
+    size_t rpc_payload_size = 0u;
+    pb_istream_t stream;
     unsigned events_before;
     unsigned tx_before;
 
@@ -787,6 +796,80 @@ static void test_ap_ethernet(void) {
     assert(
         fixture.last_event_payload_size == 3u &&
         memcmp(fixture.last_event_payload, raw + 8u, 3u) == 0
+    );
+    assert(
+        wlh_frame_decode(
+            &header,
+            &payload,
+            &payload_size,
+            fixture.tx,
+            fixture.tx_size,
+            sizeof(fixture.tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(header.channel == WLH_CHANNEL_LINK_CONTROL);
+    assert(
+        wlh_rpc_decode(
+            &rpc,
+            &rpc_payload,
+            &rpc_payload_size,
+            payload,
+            payload_size,
+            sizeof(fixture.tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(
+        rpc.service_id == WLH_SERVICE_LINK &&
+        rpc.method_id == WLH_LINK_METHOD_CREDIT_UPDATE &&
+        rpc.kind == WLH_RPC_KIND_EVENT
+    );
+    stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+    assert(pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &update));
+    assert(update.channel_id == WLH_CHANNEL_ETHERNET_AP && update.units == 1u);
+
+    /*
+     * Dropping an event because the application executor is full must not
+     * permanently consume the peer's transport credit.
+     */
+    tx_before = fixture.tx_count;
+    events_before = fixture.events;
+    fixture.reject_executor = true;
+    wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_AP);
+    header.session_id = 42u;
+    header.sequence = 1u;
+    assert(
+        wlh_frame_encode(
+            frame, sizeof(frame), &frame_size, &header, raw, sizeof(raw)
+        ) == WLH_WIRE_OK
+    );
+    assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
+    wait_for_tx(&fixture, tx_before + 1u);
+    assert(fixture.events == events_before);
+    fixture.reject_executor = false;
+    assert(
+        wlh_frame_decode(
+            &header,
+            &payload,
+            &payload_size,
+            fixture.tx,
+            fixture.tx_size,
+            sizeof(fixture.tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(header.channel == WLH_CHANNEL_LINK_CONTROL);
+    assert(
+        wlh_rpc_decode(
+            &rpc,
+            &rpc_payload,
+            &rpc_payload_size,
+            payload,
+            payload_size,
+            sizeof(fixture.tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(
+        rpc.service_id == WLH_SERVICE_LINK &&
+        rpc.method_id == WLH_LINK_METHOD_CREDIT_UPDATE
     );
 
     tx_before = fixture.tx_count;
