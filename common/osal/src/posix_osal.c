@@ -1,3 +1,16 @@
+/*
+ * The build compiles with a strict -std=c11 (C_EXTENSIONS OFF), which defines
+ * __STRICT_ANSI__ and suppresses glibc's _DEFAULT_SOURCE.  Without an explicit
+ * feature macro, POSIX declarations this file relies on (clock_gettime,
+ * CLOCK_MONOTONIC, nanosleep, pthread_condattr_setclock) stay hidden on Linux.
+ *
+ * Darwin is excluded deliberately: defining _POSIX_C_SOURCE there lowers
+ * __DARWIN_C_LEVEL and hides the *_np extensions used below.
+ */
+#if !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "wlh/posix_osal.h"
 
 #include <errno.h>
@@ -6,6 +19,68 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/*
+ * Portable timed condition-variable helpers.
+ *
+ * pthread_cond_timedwait_relative_np() is an Apple/NetBSD extension and is
+ * not available on glibc or musl Linux.  On those platforms we use
+ * pthread_cond_timedwait() with an absolute CLOCK_MONOTONIC deadline instead,
+ * which requires condition variables to be initialised with that clock.
+ *
+ * On Apple platforms we keep the _np path to avoid the macOS 10.15+
+ * requirement imposed by pthread_condattr_setclock(CLOCK_MONOTONIC).
+ */
+#ifndef WLH_POSIX_USE_TIMEDWAIT_RELATIVE_NP
+#if defined(__APPLE__) || defined(__NetBSD__)
+#define WLH_POSIX_USE_TIMEDWAIT_RELATIVE_NP 1
+#else
+#define WLH_POSIX_USE_TIMEDWAIT_RELATIVE_NP 0
+#endif
+#endif
+
+/* Initialise a condition variable backed by CLOCK_MONOTONIC where needed. */
+static int cond_init_monotonic(pthread_cond_t *cond) {
+#if WLH_POSIX_USE_TIMEDWAIT_RELATIVE_NP
+    return pthread_cond_init(cond, NULL);
+#else
+    pthread_condattr_t attr;
+    int rc;
+    if (pthread_condattr_init(&attr) != 0)
+        return -1;
+    if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) != 0) {
+        pthread_condattr_destroy(&attr);
+        return -1;
+    }
+    rc = pthread_cond_init(cond, &attr);
+    pthread_condattr_destroy(&attr);
+    return rc;
+#endif
+}
+
+/* Timed wait using a relative duration in milliseconds.
+ * On Apple/NetBSD: delegates to the relative_np extension.
+ * Elsewhere:       computes an absolute CLOCK_MONOTONIC deadline. */
+static int cond_timedwait_ms(
+    pthread_cond_t *cond, pthread_mutex_t *mutex, uint32_t duration_ms
+) {
+#if WLH_POSIX_USE_TIMEDWAIT_RELATIVE_NP
+    struct timespec rel;
+    rel.tv_sec = (time_t)(duration_ms / 1000u);
+    rel.tv_nsec = (long)(duration_ms % 1000u) * 1000000L;
+    return pthread_cond_timedwait_relative_np(cond, mutex, &rel) == 0 ? 0 : -1;
+#else
+    struct timespec ts;
+    uint64_t deadline_ms;
+    struct timespec now;
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    deadline_ms = (uint64_t)now.tv_sec * 1000u +
+                  (uint64_t)now.tv_nsec / 1000000u + duration_ms;
+    ts.tv_sec = (time_t)(deadline_ms / 1000u);
+    ts.tv_nsec = (long)(deadline_ms % 1000u) * 1000000L;
+    return pthread_cond_timedwait(cond, mutex, &ts) == 0 ? 0 : -1;
+#endif
+}
 
 typedef struct task_state {
     pthread_t thread;
@@ -87,13 +162,6 @@ static uint64_t clock_ms(void) {
     return (uint64_t)value.tv_sec * 1000u + (uint64_t)value.tv_nsec / 1000000u;
 }
 
-static struct timespec relative_duration(uint64_t duration_ms) {
-    struct timespec value;
-    value.tv_sec = (time_t)(duration_ms / 1000u);
-    value.tv_nsec = (long)(duration_ms % 1000u) * 1000000L;
-    return value;
-}
-
 static void sleep_duration(uint32_t duration_ms) {
     struct timespec request = {
         (time_t)(duration_ms / 1000u), (long)(duration_ms % 1000u) * 1000000L
@@ -109,10 +177,7 @@ static int wait_condition(
         return pthread_cond_wait(condition, mutex) == 0 ? 0 : -1;
     if (timeout_ms == WLH_OSAL_NO_WAIT)
         return -1;
-    struct timespec duration = relative_duration(timeout_ms);
-    return pthread_cond_timedwait_relative_np(condition, mutex, &duration) == 0
-               ? 0
-               : -1;
+    return cond_timedwait_ms(condition, mutex, timeout_ms);
 }
 
 static void *task_trampoline(void *argument) {
@@ -146,7 +211,7 @@ static int os_task_create(
         free(state);
         return -1;
     }
-    if (pthread_cond_init(&state->condition, NULL) != 0) {
+    if (cond_init_monotonic(&state->condition) != 0) {
         pthread_mutex_destroy(&state->mutex);
         free(state);
         return -1;
@@ -202,14 +267,12 @@ static int os_task_join(
         uint64_t deadline = clock_ms() + timeout_ms;
         while (!state->done && result == 0) {
             uint64_t now = clock_ms();
-            struct timespec duration;
             if (now >= deadline) {
                 result = ETIMEDOUT;
                 break;
             }
-            duration = relative_duration(deadline - now);
-            result = pthread_cond_timedwait_relative_np(
-                &state->condition, &state->mutex, &duration
+            result = cond_timedwait_ms(
+                &state->condition, &state->mutex, (uint32_t)(deadline - now)
             );
         }
     }
@@ -237,7 +300,7 @@ static int os_mutex_create(void *context, wlh_osal_mutex_t *mutex) {
         free(state);
         return -1;
     }
-    if (pthread_cond_init(&state->condition, NULL) != 0) {
+    if (cond_init_monotonic(&state->condition) != 0) {
         pthread_mutex_destroy(&state->mutex);
         free(state);
         return -1;
@@ -275,14 +338,12 @@ static int os_mutex_lock(
         uint64_t deadline = clock_ms() + timeout_ms;
         while (state->locked && result == 0) {
             uint64_t now = clock_ms();
-            struct timespec duration;
             if (now >= deadline) {
                 result = ETIMEDOUT;
                 break;
             }
-            duration = relative_duration(deadline - now);
-            result = pthread_cond_timedwait_relative_np(
-                &state->condition, &state->mutex, &duration
+            result = cond_timedwait_ms(
+                &state->condition, &state->mutex, (uint32_t)(deadline - now)
             );
         }
     }
@@ -315,7 +376,7 @@ static int os_semaphore_create(
     memset(semaphore, 0, sizeof(*semaphore));
     if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
-    if (pthread_cond_init(&state->condition, NULL) != 0) {
+    if (cond_init_monotonic(&state->condition) != 0) {
         pthread_mutex_destroy(&state->mutex);
         return -1;
     }
@@ -387,7 +448,7 @@ static int os_event_create(void *context, wlh_osal_event_t *event) {
     memset(event, 0, sizeof(*event));
     if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
-    if (pthread_cond_init(&state->condition, NULL) != 0) {
+    if (cond_init_monotonic(&state->condition) != 0) {
         pthread_mutex_destroy(&state->mutex);
         return -1;
     }
@@ -468,8 +529,11 @@ static int os_queue_create(
     memset(queue, 0, sizeof(*queue));
     if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
-    if (pthread_cond_init(&state->not_empty, NULL) != 0 ||
-        pthread_cond_init(&state->not_full, NULL) != 0) {
+    if (cond_init_monotonic(&state->not_empty) != 0) {
+        pthread_mutex_destroy(&state->mutex);
+        return -1;
+    }
+    if (cond_init_monotonic(&state->not_full) != 0) {
         pthread_cond_destroy(&state->not_empty);
         pthread_mutex_destroy(&state->mutex);
         return -1;
@@ -558,10 +622,7 @@ static void *timer_main(void *argument) {
         now = clock_ms();
         if (now < state->deadline_ms) {
             wait_ms = (uint32_t)(state->deadline_ms - now);
-            struct timespec duration = relative_duration(wait_ms);
-            (void)pthread_cond_timedwait_relative_np(
-                &state->condition, &state->mutex, &duration
-            );
+            (void)cond_timedwait_ms(&state->condition, &state->mutex, wait_ms);
             continue;
         }
         if (state->periodic)
@@ -588,7 +649,7 @@ static int os_timer_create(
     memset(timer, 0, sizeof(*timer));
     if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
-    if (pthread_cond_init(&state->condition, NULL) != 0) {
+    if (cond_init_monotonic(&state->condition) != 0) {
         pthread_mutex_destroy(&state->mutex);
         return -1;
     }
