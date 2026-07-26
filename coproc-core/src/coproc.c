@@ -15,6 +15,25 @@
 #define RPC_BUFFER_SIZE 1536u
 #define RAW_HEADER_SIZE 8u
 
+/* Bound for caller-supplied SSIDs, taken from the nanopb field so it tracks
+   the schema. WifiNetwork and WifiLinkInfo must agree for MAX_SSID_SIZE to be
+   a valid bound for both event shapes. */
+#define WLH_COPROC_MAX_SSID_SIZE                                               \
+    sizeof(((wlh_protocol_v1_WifiLinkInfo *)0)->ssid.bytes)
+
+_Static_assert(
+    sizeof(((wlh_protocol_v1_WifiNetwork *)0)->ssid.bytes) ==
+        WLH_COPROC_MAX_SSID_SIZE,
+    "WifiNetwork and WifiLinkInfo ssid bounds diverged"
+);
+
+/* A BSS is only usable if its SSID fits the schema bound and is non-NULL when
+   non-empty; every event path copies it into a fixed-size nanopb field. */
+static bool bss_ssid_valid(const wlh_coproc_bss_t *bss) {
+    return bss->ssid_size <= WLH_COPROC_MAX_SSID_SIZE &&
+           (bss->ssid_size == 0u || bss->ssid != NULL);
+}
+
 #if defined(__GNUC__) || defined(__clang__)
 #define WLH_NOINLINE __attribute__((noinline))
 #else
@@ -1471,7 +1490,7 @@ wlh_coproc_result_t wlh_coproc_wifi_scan_result(
     wlh_protocol_v1_WifiNetwork *network;
     wlh_coproc_result_t result;
 
-    if (coproc == NULL || bss == NULL || bss->ssid_size > 32u) {
+    if (coproc == NULL || bss == NULL || !bss_ssid_valid(bss)) {
         return WLH_COPROC_INVALID_ARGUMENT;
     }
 
@@ -1531,7 +1550,7 @@ wlh_coproc_result_t wlh_coproc_wifi_connected(
     wlh_protocol_v1_WifiConnectedEvent event =
         wlh_protocol_v1_WifiConnectedEvent_init_zero;
 
-    if (coproc == NULL || bss == NULL) {
+    if (coproc == NULL || bss == NULL || !bss_ssid_valid(bss)) {
         return WLH_COPROC_INVALID_ARGUMENT;
     }
 
@@ -1581,7 +1600,7 @@ wlh_coproc_result_t wlh_coproc_wifi_ap_started(
     wlh_protocol_v1_WifiConnectedEvent event =
         wlh_protocol_v1_WifiConnectedEvent_init_zero;
 
-    if (coproc == NULL || ap == NULL)
+    if (coproc == NULL || ap == NULL || !bss_ssid_valid(ap))
         return WLH_COPROC_INVALID_ARGUMENT;
     event.has_link = true;
     event.link.interface = wlh_protocol_v1_WifiInterface_WIFI_INTERFACE_AP;
