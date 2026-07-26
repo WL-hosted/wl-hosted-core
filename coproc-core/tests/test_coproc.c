@@ -1086,6 +1086,62 @@ static void test_softap(void) {
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }
 
+/* An oversized ssid_size from an adapter must be rejected, not copied into the
+   fixed-size nanopb ssid field. Every event path that copies a BSS ssid is
+   covered here. */
+static void test_oversized_ssid_rejected(void) {
+    static uint8_t ssid[200];
+    wlh_coproc_t core;
+    wlh_coproc_bss_t bss;
+    failing_allocator_t allocator;
+
+    memset(ssid, 'A', sizeof(ssid));
+    memset(&core, 0, sizeof(core));
+    memset(&bss, 0, sizeof(bss));
+    memset(&allocator, 0, sizeof(allocator));
+    core.config.buffers = (wlh_coproc_buffer_ops_t){&allocator,
+                                                    failing_buffer_alloc,
+                                                    failing_buffer_free};
+    bss.ssid = ssid;
+    bss.ssid_size = sizeof(ssid);
+
+    CHECK(
+        wlh_coproc_wifi_scan_result(&core, 1u, &bss) ==
+        WLH_COPROC_INVALID_ARGUMENT
+    );
+    CHECK(
+        wlh_coproc_wifi_connected(&core, &bss) == WLH_COPROC_INVALID_ARGUMENT
+    );
+    CHECK(
+        wlh_coproc_wifi_ap_started(&core, &bss) == WLH_COPROC_INVALID_ARGUMENT
+    );
+    /* Rejected before any allocation. */
+    CHECK(allocator.attempts == 0u && allocator.outstanding == 0u);
+
+    /* A non-NULL ssid is required whenever ssid_size is non-zero. */
+    bss.ssid = NULL;
+    bss.ssid_size = 8u;
+    CHECK(
+        wlh_coproc_wifi_scan_result(&core, 1u, &bss) ==
+        WLH_COPROC_INVALID_ARGUMENT
+    );
+    CHECK(
+        wlh_coproc_wifi_connected(&core, &bss) == WLH_COPROC_INVALID_ARGUMENT
+    );
+    CHECK(
+        wlh_coproc_wifi_ap_started(&core, &bss) == WLH_COPROC_INVALID_ARGUMENT
+    );
+
+    /* The exact schema bound is still accepted: it reaches the allocator. */
+    bss.ssid = ssid;
+    bss.ssid_size = 32u;
+    allocator.fail_at = 1u;
+    CHECK(
+        wlh_coproc_wifi_scan_result(&core, 1u, &bss) == WLH_COPROC_BACKEND_ERROR
+    );
+    CHECK(allocator.attempts == 1u && allocator.outstanding == 0u);
+}
+
 static void test_large_message_allocation_failures(void) {
     static const uint8_t ssid[] = "allocation-test";
     wlh_coproc_t core;
@@ -1120,6 +1176,7 @@ int main(void) {
     test_device_info_and_user_passthrough();
     test_optional_services_not_configured();
     test_softap();
+    test_oversized_ssid_rejected();
     test_large_message_allocation_failures();
     if (failures != 0)
         return 1;
