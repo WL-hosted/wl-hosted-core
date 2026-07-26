@@ -17,6 +17,8 @@ extern "C" {
 #define WLH_HOST_MAX_SSID_SIZE 32u
 #define WLH_HOST_MAX_CREDENTIAL_SIZE 64u
 #define WLH_HOST_MAX_USER_PAYLOAD_SIZE 512u
+#define WLH_HOST_MAX_KV_KEY_SIZE 64u
+#define WLH_HOST_MAX_KV_VALUE_SIZE 512u
 #define WLH_HOST_MAX_QUEUE_DEPTH 32u
 
 typedef enum wlh_host_result {
@@ -315,6 +317,117 @@ wlh_host_result_t wlh_host_user_message_send(
     uint32_t flags,
     const uint8_t *payload,
     size_t payload_size,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+
+/* IO service client. Values match the IoMode/IoPull wire enums. */
+typedef enum wlh_host_io_mode {
+    WLH_HOST_IO_MODE_INPUT = 1,
+    WLH_HOST_IO_MODE_OUTPUT = 2,
+    WLH_HOST_IO_MODE_OPEN_DRAIN = 3
+} wlh_host_io_mode_t;
+
+typedef enum wlh_host_io_pull {
+    WLH_HOST_IO_PULL_NONE = 1,
+    WLH_HOST_IO_PULL_UP = 2,
+    WLH_HOST_IO_PULL_DOWN = 3
+} wlh_host_io_pull_t;
+
+typedef struct wlh_host_io_config {
+    /* Logical profile pin, not a vendor GPIO number. */
+    uint32_t pin_id;
+    wlh_host_io_mode_t mode;
+    wlh_host_io_pull_t pull;
+    /* Latched before an OUTPUT/OPEN_DRAIN direction change; ignored for
+     * INPUT. */
+    bool initial_level;
+} wlh_host_io_config_t;
+
+typedef struct wlh_host_io_state {
+    uint32_t pin_id;
+    bool level;
+    /* Configuration in effect on the coprocessor, not the requested one. */
+    wlh_host_io_mode_t mode;
+    wlh_host_io_pull_t pull;
+} wlh_host_io_state_t;
+
+typedef struct wlh_host_adc_sample {
+    uint32_t pin_id;
+    uint32_t millivolts;
+} wlh_host_adc_sample_t;
+
+/* The result pointer is NULL unless result == WLH_HOST_OK, and is valid only
+ * for the duration of the call. */
+typedef void (*wlh_host_io_read_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const wlh_host_io_state_t *state
+);
+typedef void (*wlh_host_adc_read_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const wlh_host_adc_sample_t *sample
+);
+/* value is NUL-terminated; value_size excludes the terminator. */
+typedef void (*wlh_host_kv_read_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const char *value,
+    size_t value_size
+);
+
+wlh_host_result_t wlh_host_io_configure(
+    wlh_host_t *host,
+    const wlh_host_io_config_t *config,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_io_read(
+    wlh_host_t *host,
+    uint32_t pin_id,
+    wlh_host_io_read_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_io_write(
+    wlh_host_t *host,
+    uint32_t pin_id,
+    bool level,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+
+wlh_host_result_t wlh_host_adc_read(
+    wlh_host_t *host,
+    uint32_t pin_id,
+    wlh_host_adc_read_fn completion,
+    void *context
+);
+
+/* KV service client. Keys and values are UTF-8; the coprocessor rejects
+ * anything else. Sizes are bounded by WLH_HOST_MAX_KV_*. */
+wlh_host_result_t wlh_host_kv_read(
+    wlh_host_t *host,
+    const char *key,
+    wlh_host_kv_read_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_kv_write(
+    wlh_host_t *host,
+    const char *key,
+    const char *value,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_kv_erase(
+    wlh_host_t *host,
+    const char *key,
     wlh_rpc_completion_fn completion,
     void *context
 );

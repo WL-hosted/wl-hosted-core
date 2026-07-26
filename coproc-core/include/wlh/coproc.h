@@ -130,6 +130,110 @@ typedef struct wlh_coproc_device_info_ops {
     wlh_coproc_get_device_info_fn get_info;
 } wlh_coproc_device_info_ops_t;
 
+/* Shared result codes for the synchronous optional-service backends (IO, ADC,
+ * KV). Core maps them onto wire status codes inside the service's status
+ * domain; any unrecognised negative value becomes INTERNAL.
+ *
+ * INVALID_STATE has no published wlh_status_code_t counterpart, so it maps to
+ * the closest one, NOT_READY. That is the code a host sees for e.g. writing a
+ * pin that is configured as INPUT. */
+typedef enum wlh_coproc_service_status {
+    WLH_COPROC_SERVICE_OK = 0,
+    WLH_COPROC_SERVICE_INVALID_ARGUMENT = -1,
+    WLH_COPROC_SERVICE_NOT_FOUND = -2,
+    WLH_COPROC_SERVICE_NOT_SUPPORTED = -3,
+    WLH_COPROC_SERVICE_INVALID_STATE = -4,
+    WLH_COPROC_SERVICE_NO_SPACE = -5,
+    WLH_COPROC_SERVICE_INTERNAL = -6
+} wlh_coproc_service_status_t;
+
+/* IO service (optional). Values match the IoMode/IoPull wire enums, but the
+ * adapter contract stays free of protobuf types. */
+typedef enum wlh_coproc_io_mode {
+    WLH_COPROC_IO_MODE_INPUT = 1,
+    WLH_COPROC_IO_MODE_OUTPUT = 2,
+    WLH_COPROC_IO_MODE_OPEN_DRAIN = 3
+} wlh_coproc_io_mode_t;
+
+typedef enum wlh_coproc_io_pull {
+    WLH_COPROC_IO_PULL_NONE = 1,
+    WLH_COPROC_IO_PULL_UP = 2,
+    WLH_COPROC_IO_PULL_DOWN = 3
+} wlh_coproc_io_pull_t;
+
+typedef struct wlh_coproc_io_config {
+    /* Logical profile pin, not a vendor GPIO number. */
+    uint32_t pin_id;
+    wlh_coproc_io_mode_t mode;
+    wlh_coproc_io_pull_t pull;
+    /* Latch this before switching an OUTPUT/OPEN_DRAIN pin's direction so the
+     * transition does not glitch. Ignored for INPUT. */
+    bool initial_level;
+} wlh_coproc_io_config_t;
+
+typedef struct wlh_coproc_io_state {
+    bool level;
+    /* Configuration actually in effect, not the cached request. */
+    wlh_coproc_io_mode_t mode;
+    wlh_coproc_io_pull_t pull;
+} wlh_coproc_io_state_t;
+
+/* All three run on the core task and must be nonblocking. Return 0 or a
+ * wlh_coproc_service_status_t. */
+typedef int (*wlh_coproc_io_configure_fn)(
+    void *context, const wlh_coproc_io_config_t *config
+);
+typedef int (*wlh_coproc_io_read_fn)(
+    void *context, uint32_t pin_id, wlh_coproc_io_state_t *state
+);
+typedef int (*wlh_coproc_io_write_fn)(
+    void *context, uint32_t pin_id, bool level
+);
+
+typedef struct wlh_coproc_io_ops {
+    void *context;
+    wlh_coproc_io_configure_fn configure;
+    wlh_coproc_io_read_fn read;
+    wlh_coproc_io_write_fn write;
+} wlh_coproc_io_ops_t;
+
+/* ADC service (optional). Reports the calibrated pin voltage; resolution,
+ * attenuation and raw codes belong to the adapter. */
+typedef int (*wlh_coproc_adc_read_fn)(
+    void *context, uint32_t pin_id, uint32_t *millivolts
+);
+
+typedef struct wlh_coproc_adc_ops {
+    void *context;
+    wlh_coproc_adc_read_fn read;
+} wlh_coproc_adc_ops_t;
+
+/* KV service (optional). Bounds match the nanopb bounds of the Kv messages,
+ * excluding the NUL terminator the adapter contract adds. */
+#define WLH_COPROC_KV_MAX_KEY_SIZE 64u
+#define WLH_COPROC_KV_MAX_VALUE_SIZE 512u
+
+/* key and value are NUL-terminated UTF-8; the sizes exclude the terminator.
+ * read must NUL-terminate `value` and set `value_size` to the byte length. */
+typedef int (*wlh_coproc_kv_read_fn)(
+    void *context,
+    const char *key,
+    char *value,
+    size_t value_capacity,
+    size_t *value_size
+);
+typedef int (*wlh_coproc_kv_write_fn)(
+    void *context, const char *key, const char *value, size_t value_size
+);
+typedef int (*wlh_coproc_kv_erase_fn)(void *context, const char *key);
+
+typedef struct wlh_coproc_kv_ops {
+    void *context;
+    wlh_coproc_kv_read_fn read;
+    wlh_coproc_kv_write_fn write;
+    wlh_coproc_kv_erase_fn erase;
+} wlh_coproc_kv_ops_t;
+
 /* User Passthrough service (optional, RPC form only). */
 typedef struct wlh_coproc_user_message {
     uint32_t endpoint_id;
@@ -170,6 +274,9 @@ typedef struct wlh_coproc_config {
     wlh_coproc_port_t port;
     wlh_coproc_wifi_ops_t wifi;
     wlh_coproc_device_info_ops_t device_info;
+    wlh_coproc_io_ops_t io;
+    wlh_coproc_adc_ops_t adc;
+    wlh_coproc_kv_ops_t kv;
     wlh_coproc_user_passthrough_ops_t user_passthrough;
     wlh_coproc_buffer_ops_t buffers;
     wlh_osal_ops_t osal;

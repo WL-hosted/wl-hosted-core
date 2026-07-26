@@ -4,8 +4,11 @@
 #include <limits.h>
 #include <string.h>
 
+#include "adc.pb.h"
 #include "device_info.pb.h"
 #include "diagnostics.pb.h"
+#include "io.pb.h"
+#include "kv.pb.h"
 #include "link.pb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -25,6 +28,19 @@ _Static_assert(
     sizeof(((wlh_protocol_v1_WifiNetwork *)0)->ssid.bytes) ==
         WLH_COPROC_MAX_SSID_SIZE,
     "WifiNetwork and WifiLinkInfo ssid bounds diverged"
+);
+
+/* The adapter contract is NUL-terminated strings, so every KV bound is one
+   byte smaller than the nanopb field that carries it. */
+_Static_assert(
+    sizeof(((wlh_protocol_v1_KvWriteRequest *)0)->key) ==
+        WLH_COPROC_KV_MAX_KEY_SIZE + 1u,
+    "KV key bound diverged from the schema"
+);
+_Static_assert(
+    sizeof(((wlh_protocol_v1_KvReadResponse *)0)->value) ==
+        WLH_COPROC_KV_MAX_VALUE_SIZE + 1u,
+    "KV value bound diverged from the schema"
 );
 
 /* A BSS is only usable if its SSID fits the schema bound and is non-NULL when
@@ -857,6 +873,467 @@ static WLH_NOINLINE wlh_coproc_result_t handle_user_message_request(
     );
 }
 
+/* Map a wlh_coproc_service_status_t onto the published wire status codes. The
+   status enum has no INVALID_STATE, so NOT_READY carries that meaning. */
+static int16_t service_status_to_wire(int status) {
+    switch (status) {
+    case WLH_COPROC_SERVICE_OK:
+        return WLH_STATUS_OK;
+    case WLH_COPROC_SERVICE_INVALID_ARGUMENT:
+        return WLH_STATUS_INVALID_ARGUMENT;
+    case WLH_COPROC_SERVICE_NOT_FOUND:
+        return WLH_STATUS_NOT_FOUND;
+    case WLH_COPROC_SERVICE_NOT_SUPPORTED:
+        return WLH_STATUS_NOT_SUPPORTED;
+    case WLH_COPROC_SERVICE_INVALID_STATE:
+        return WLH_STATUS_NOT_READY;
+    case WLH_COPROC_SERVICE_NO_SPACE:
+        return WLH_STATUS_RESOURCE_EXHAUSTED;
+    default:
+        return WLH_STATUS_INTERNAL;
+    }
+}
+
+static wlh_coproc_result_t send_service_error(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    uint16_t status_domain,
+    int status
+) {
+    return send_rpc(
+        coproc,
+        request->service_id,
+        request->method_id,
+        request->request_id,
+        WLH_RPC_KIND_RESPONSE,
+        status_domain,
+        service_status_to_wire(status),
+        NULL,
+        0u
+    );
+}
+
+static bool io_mode_valid(uint32_t mode) {
+    return mode == WLH_COPROC_IO_MODE_INPUT ||
+           mode == WLH_COPROC_IO_MODE_OUTPUT ||
+           mode == WLH_COPROC_IO_MODE_OPEN_DRAIN;
+}
+
+static bool io_pull_valid(uint32_t pull) {
+    return pull == WLH_COPROC_IO_PULL_NONE || pull == WLH_COPROC_IO_PULL_UP ||
+           pull == WLH_COPROC_IO_PULL_DOWN;
+}
+
+/* KV keys and values are UTF-8 on the wire; v1 rejects anything else rather
+   than persisting bytes a peer cannot decode. Rejects overlong encodings,
+   surrogates and anything past U+10FFFF. */
+static bool utf8_valid(const char *text, size_t size) {
+    size_t i = 0u;
+
+    while (i < size) {
+        uint8_t lead = (uint8_t)text[i];
+        size_t extra;
+        uint32_t code_point;
+        size_t j;
+
+        if (lead < 0x80u) {
+            ++i;
+            continue;
+        }
+        if (lead >= 0xc2u && lead <= 0xdfu) {
+            extra = 1u;
+            code_point = lead & 0x1fu;
+        } else if (lead >= 0xe0u && lead <= 0xefu) {
+            extra = 2u;
+            code_point = lead & 0x0fu;
+        } else if (lead >= 0xf0u && lead <= 0xf4u) {
+            extra = 3u;
+            code_point = lead & 0x07u;
+        } else {
+            return false;
+        }
+        if (size - i <= extra)
+            return false;
+        for (j = 1u; j <= extra; ++j) {
+            uint8_t continuation = (uint8_t)text[i + j];
+            if ((continuation & 0xc0u) != 0x80u)
+                return false;
+            code_point = (code_point << 6) | (continuation & 0x3fu);
+        }
+        if (extra == 2u && code_point < 0x800u)
+            return false;
+        if (extra == 3u && code_point < 0x10000u)
+            return false;
+        if (code_point > 0x10ffffu)
+            return false;
+        if (code_point >= 0xd800u && code_point <= 0xdfffu)
+            return false;
+        i += extra + 1u;
+    }
+    return true;
+}
+
+static WLH_NOINLINE wlh_coproc_result_t handle_io_request(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+) {
+    pb_istream_t stream = pb_istream_from_buffer(message, message_size);
+    int status;
+
+    switch (request->method_id) {
+    case WLH_IO_METHOD_CONFIGURE: {
+        wlh_protocol_v1_IoConfigureRequest configure =
+            wlh_protocol_v1_IoConfigureRequest_init_zero;
+        wlh_coproc_io_config_t config;
+
+        if (!pb_decode(
+                &stream, wlh_protocol_v1_IoConfigureRequest_fields, &configure
+            ))
+            return WLH_COPROC_PROTOCOL_ERROR;
+        if (!io_mode_valid((uint32_t)configure.mode) ||
+            !io_pull_valid((uint32_t)configure.pull))
+            return send_service_error(
+                coproc,
+                request,
+                WLH_STATUS_DOMAIN_PERIPHERAL,
+                WLH_COPROC_SERVICE_INVALID_ARGUMENT
+            );
+        config.pin_id = configure.pin_id;
+        config.mode = (wlh_coproc_io_mode_t)configure.mode;
+        config.pull = (wlh_coproc_io_pull_t)configure.pull;
+        config.initial_level = configure.initial_level;
+        status =
+            coproc->config.io.configure(coproc->config.io.context, &config);
+        return status == WLH_COPROC_SERVICE_OK
+                   ? send_rpc(
+                         coproc,
+                         request->service_id,
+                         request->method_id,
+                         request->request_id,
+                         WLH_RPC_KIND_RESPONSE,
+                         WLH_STATUS_DOMAIN_NONE,
+                         WLH_STATUS_OK,
+                         NULL,
+                         0u
+                     )
+                   : send_service_error(
+                         coproc, request, WLH_STATUS_DOMAIN_PERIPHERAL, status
+                     );
+    }
+    case WLH_IO_METHOD_READ: {
+        wlh_protocol_v1_IoReadRequest read =
+            wlh_protocol_v1_IoReadRequest_init_zero;
+        wlh_protocol_v1_IoReadResponse response =
+            wlh_protocol_v1_IoReadResponse_init_zero;
+        wlh_coproc_io_state_t state;
+
+        if (!pb_decode(&stream, wlh_protocol_v1_IoReadRequest_fields, &read))
+            return WLH_COPROC_PROTOCOL_ERROR;
+        if (coproc->config.io.read == NULL)
+            return send_service_error(
+                coproc,
+                request,
+                WLH_STATUS_DOMAIN_PERIPHERAL,
+                WLH_COPROC_SERVICE_NOT_SUPPORTED
+            );
+        memset(&state, 0, sizeof(state));
+        status = coproc->config.io.read(
+            coproc->config.io.context, read.pin_id, &state
+        );
+        if (status != WLH_COPROC_SERVICE_OK)
+            return send_service_error(
+                coproc, request, WLH_STATUS_DOMAIN_PERIPHERAL, status
+            );
+        /* The response reports the configuration in effect; an adapter that
+           cannot name it has no valid answer to give. */
+        if (!io_mode_valid((uint32_t)state.mode) ||
+            !io_pull_valid((uint32_t)state.pull))
+            return send_service_error(
+                coproc,
+                request,
+                WLH_STATUS_DOMAIN_PERIPHERAL,
+                WLH_COPROC_SERVICE_INTERNAL
+            );
+        response.pin_id = read.pin_id;
+        response.level = state.level;
+        response.mode = (wlh_protocol_v1_IoMode)state.mode;
+        response.pull = (wlh_protocol_v1_IoPull)state.pull;
+        return send_rpc_message(
+            coproc,
+            request->service_id,
+            request->method_id,
+            request->request_id,
+            WLH_RPC_KIND_RESPONSE,
+            WLH_STATUS_DOMAIN_NONE,
+            WLH_STATUS_OK,
+            wlh_protocol_v1_IoReadResponse_fields,
+            &response
+        );
+    }
+    case WLH_IO_METHOD_WRITE: {
+        wlh_protocol_v1_IoWriteRequest write =
+            wlh_protocol_v1_IoWriteRequest_init_zero;
+
+        if (!pb_decode(&stream, wlh_protocol_v1_IoWriteRequest_fields, &write))
+            return WLH_COPROC_PROTOCOL_ERROR;
+        if (coproc->config.io.write == NULL)
+            return send_service_error(
+                coproc,
+                request,
+                WLH_STATUS_DOMAIN_PERIPHERAL,
+                WLH_COPROC_SERVICE_NOT_SUPPORTED
+            );
+        status = coproc->config.io.write(
+            coproc->config.io.context, write.pin_id, write.level
+        );
+        return status == WLH_COPROC_SERVICE_OK
+                   ? send_rpc(
+                         coproc,
+                         request->service_id,
+                         request->method_id,
+                         request->request_id,
+                         WLH_RPC_KIND_RESPONSE,
+                         WLH_STATUS_DOMAIN_NONE,
+                         WLH_STATUS_OK,
+                         NULL,
+                         0u
+                     )
+                   : send_service_error(
+                         coproc, request, WLH_STATUS_DOMAIN_PERIPHERAL, status
+                     );
+    }
+    default:
+        break;
+    }
+    return send_rpc(
+        coproc,
+        request->service_id,
+        request->method_id,
+        request->request_id,
+        WLH_RPC_KIND_RESPONSE,
+        WLH_STATUS_DOMAIN_PROTOCOL,
+        WLH_STATUS_NOT_SUPPORTED,
+        NULL,
+        0u
+    );
+}
+
+static WLH_NOINLINE wlh_coproc_result_t handle_adc_request(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+) {
+    wlh_protocol_v1_AdcReadRequest read =
+        wlh_protocol_v1_AdcReadRequest_init_zero;
+    wlh_protocol_v1_AdcReadResponse response =
+        wlh_protocol_v1_AdcReadResponse_init_zero;
+    pb_istream_t stream = pb_istream_from_buffer(message, message_size);
+    uint32_t millivolts = 0u;
+    int status;
+
+    if (request->method_id != WLH_ADC_METHOD_READ) {
+        return send_rpc(
+            coproc,
+            request->service_id,
+            request->method_id,
+            request->request_id,
+            WLH_RPC_KIND_RESPONSE,
+            WLH_STATUS_DOMAIN_PROTOCOL,
+            WLH_STATUS_NOT_SUPPORTED,
+            NULL,
+            0u
+        );
+    }
+    if (!pb_decode(&stream, wlh_protocol_v1_AdcReadRequest_fields, &read))
+        return WLH_COPROC_PROTOCOL_ERROR;
+    status = coproc->config.adc.read(
+        coproc->config.adc.context, read.pin_id, &millivolts
+    );
+    if (status != WLH_COPROC_SERVICE_OK)
+        return send_service_error(
+            coproc, request, WLH_STATUS_DOMAIN_PERIPHERAL, status
+        );
+    response.pin_id = read.pin_id;
+    response.millivolts = millivolts;
+    return send_rpc_message(
+        coproc,
+        request->service_id,
+        request->method_id,
+        request->request_id,
+        WLH_RPC_KIND_RESPONSE,
+        WLH_STATUS_DOMAIN_NONE,
+        WLH_STATUS_OK,
+        wlh_protocol_v1_AdcReadResponse_fields,
+        &response
+    );
+}
+
+/* One allocation covers whichever KV message the method needs; the READ path
+   copies its key out before the buffer is reused for the response. */
+typedef union kv_message {
+    wlh_protocol_v1_KvReadRequest read;
+    wlh_protocol_v1_KvReadResponse response;
+    wlh_protocol_v1_KvWriteRequest write;
+    wlh_protocol_v1_KvEraseRequest erase;
+} kv_message_t;
+
+static WLH_NOINLINE wlh_coproc_result_t handle_kv_request(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+) {
+    kv_message_t *buffer;
+    pb_istream_t stream = pb_istream_from_buffer(message, message_size);
+    const pb_msgdesc_t *fields;
+    const char *key;
+    wlh_coproc_result_t result;
+    int status;
+
+    switch (request->method_id) {
+    case WLH_KV_METHOD_READ:
+        fields = wlh_protocol_v1_KvReadRequest_fields;
+        break;
+    case WLH_KV_METHOD_WRITE:
+        fields = wlh_protocol_v1_KvWriteRequest_fields;
+        break;
+    case WLH_KV_METHOD_ERASE:
+        fields = wlh_protocol_v1_KvEraseRequest_fields;
+        break;
+    default:
+        return send_rpc(
+            coproc,
+            request->service_id,
+            request->method_id,
+            request->request_id,
+            WLH_RPC_KIND_RESPONSE,
+            WLH_STATUS_DOMAIN_PROTOCOL,
+            WLH_STATUS_NOT_SUPPORTED,
+            NULL,
+            0u
+        );
+    }
+
+    buffer = (kv_message_t *)coproc->config.buffers.alloc(
+        coproc->config.buffers.context, sizeof(*buffer)
+    );
+    if (buffer == NULL)
+        return WLH_COPROC_BACKEND_ERROR;
+    memset(buffer, 0, sizeof(*buffer));
+    if (!pb_decode(&stream, fields, buffer)) {
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)buffer
+        );
+        return WLH_COPROC_PROTOCOL_ERROR;
+    }
+
+    /* Every KV message puts the key first, so one check covers all three. */
+    key = buffer->read.key;
+    if (key[0] == '\0' || !utf8_valid(key, strlen(key))) {
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)buffer
+        );
+        return send_service_error(
+            coproc,
+            request,
+            WLH_STATUS_DOMAIN_STORAGE,
+            WLH_COPROC_SERVICE_INVALID_ARGUMENT
+        );
+    }
+
+    switch (request->method_id) {
+    case WLH_KV_METHOD_READ: {
+        char requested_key[WLH_COPROC_KV_MAX_KEY_SIZE + 1u];
+        size_t value_size = 0u;
+
+        memcpy(requested_key, key, strlen(key) + 1u);
+        if (coproc->config.kv.read == NULL) {
+            status = WLH_COPROC_SERVICE_NOT_SUPPORTED;
+            break;
+        }
+        memset(buffer, 0, sizeof(*buffer));
+        status = coproc->config.kv.read(
+            coproc->config.kv.context,
+            requested_key,
+            buffer->response.value,
+            sizeof(buffer->response.value),
+            &value_size
+        );
+        if (status != WLH_COPROC_SERVICE_OK)
+            break;
+        /* A backend that overruns its bound or returns non-UTF-8 would put
+           unvalidated bytes on the wire. */
+        if (value_size > WLH_COPROC_KV_MAX_VALUE_SIZE ||
+            !utf8_valid(buffer->response.value, value_size)) {
+            status = WLH_COPROC_SERVICE_INTERNAL;
+            break;
+        }
+        buffer->response.value[value_size] = '\0';
+        result = send_rpc_message(
+            coproc,
+            request->service_id,
+            request->method_id,
+            request->request_id,
+            WLH_RPC_KIND_RESPONSE,
+            WLH_STATUS_DOMAIN_NONE,
+            WLH_STATUS_OK,
+            wlh_protocol_v1_KvReadResponse_fields,
+            &buffer->response
+        );
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)buffer
+        );
+        return result;
+    }
+    case WLH_KV_METHOD_WRITE: {
+        size_t value_size = strlen(buffer->write.value);
+
+        if (!utf8_valid(buffer->write.value, value_size)) {
+            status = WLH_COPROC_SERVICE_INVALID_ARGUMENT;
+            break;
+        }
+        status = coproc->config.kv.write == NULL
+                     ? WLH_COPROC_SERVICE_NOT_SUPPORTED
+                     : coproc->config.kv.write(
+                           coproc->config.kv.context,
+                           buffer->write.key,
+                           buffer->write.value,
+                           value_size
+                       );
+        break;
+    }
+    default:
+        status = coproc->config.kv.erase == NULL
+                     ? WLH_COPROC_SERVICE_NOT_SUPPORTED
+                     : coproc->config.kv.erase(
+                           coproc->config.kv.context, buffer->erase.key
+                       );
+        break;
+    }
+
+    coproc->config.buffers.free(
+        coproc->config.buffers.context, (uint8_t *)buffer
+    );
+    if (status != WLH_COPROC_SERVICE_OK)
+        return send_service_error(
+            coproc, request, WLH_STATUS_DOMAIN_STORAGE, status
+        );
+    return send_rpc(
+        coproc,
+        request->service_id,
+        request->method_id,
+        request->request_id,
+        WLH_RPC_KIND_RESPONSE,
+        WLH_STATUS_DOMAIN_NONE,
+        WLH_STATUS_OK,
+        NULL,
+        0u
+    );
+}
+
 static WLH_NOINLINE wlh_coproc_result_t handle_rpc(
     wlh_coproc_t *coproc,
     const wlh_frame_header_t *frame_header,
@@ -999,6 +1476,23 @@ static WLH_NOINLINE wlh_coproc_result_t handle_rpc(
         return handle_user_message_request(
             coproc, &request, message, message_size
         );
+    }
+
+    /* Optional services answer only once an adapter has supplied a backend;
+       otherwise the request falls through to NOT_SUPPORTED below. */
+    if (request.service_id == WLH_SERVICE_IO &&
+        coproc->config.io.configure != NULL) {
+        return handle_io_request(coproc, &request, message, message_size);
+    }
+
+    if (request.service_id == WLH_SERVICE_ADC &&
+        coproc->config.adc.read != NULL) {
+        return handle_adc_request(coproc, &request, message, message_size);
+    }
+
+    if (request.service_id == WLH_SERVICE_KV &&
+        coproc->config.kv.read != NULL) {
+        return handle_kv_request(coproc, &request, message, message_size);
     }
 
     return send_rpc(
