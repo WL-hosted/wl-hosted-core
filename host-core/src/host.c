@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "adc.pb.h"
+#include "bluetooth.pb.h"
 #include "common.pb.h"
 #include "device_info.pb.h"
 #include "io.pb.h"
@@ -42,6 +43,7 @@ typedef enum wlh_host_job_kind {
     WLH_HOST_JOB_RX_FRAME,
     WLH_HOST_JOB_RPC_REQUEST,
     WLH_HOST_JOB_ETHERNET_TX,
+    WLH_HOST_JOB_BLUETOOTH_TX,
     WLH_HOST_JOB_TRANSPORT_LOST,
     WLH_HOST_JOB_TRANSPORT_STARTED,
     WLH_HOST_JOB_TRANSPORT_START_FAILED,
@@ -75,6 +77,14 @@ _Static_assert(
     sizeof(wlh_host_job_t) <= sizeof(uintptr_t) * 2u,
     "host queue slot too small"
 );
+
+/* Keep the large frame-processing paths out of host_worker's stack frame so
+   the worker stays within the MCU frame budget. */
+#if defined(__GNUC__) || defined(__clang__)
+#define WLH_NOINLINE __attribute__((noinline))
+#else
+#define WLH_NOINLINE
+#endif
 
 static uint64_t now_ms(const wlh_host_t *host) {
     return host->config.osal.monotonic_time_ms(host->config.osal.context);
@@ -460,7 +470,7 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
     hello->checksum_modes[1] =
         wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_CRC32C;
     hello->max_rpc_payload = WLH_HOST_PROTOBUF_LIMIT;
-    hello->services_count = 3u;
+    hello->services_count = 4u;
     // clang-format off
     hello->services[0] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_LINK, 1u, 0u, 0u,
@@ -474,7 +484,11 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
         WLH_SERVICE_DIAGNOSTICS, 1u, 0u, 0u,
     };
 
-    hello->channels_count = 4u;
+    hello->services[3] = (wlh_protocol_v1_ServiceVersionRange){
+        WLH_SERVICE_BLUETOOTH, 1u, 0u, 0u,
+    };
+
+    hello->channels_count = 5u;
     hello->channels[0] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_LINK_CONTROL, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
@@ -489,6 +503,10 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
 
     hello->channels[3] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_ETHERNET_AP, 1600u, 0u, 1u, 0u,
+    };
+
+    hello->channels[4] = (wlh_protocol_v1_ChannelCapability){
+        WLH_CHANNEL_BLUETOOTH_HCI, WLH_HOST_MAX_HCI_PACKET, 0u, 1u, 0u,
     };
     // clang-format on
     memset(&envelope, 0, sizeof(envelope));
@@ -571,6 +589,39 @@ static wlh_host_result_t handle_hello_response(
                 hello->initial_credits[index].units;
         }
     }
+    {
+        bool service_found = false;
+        bool channel_found = false;
+        uint32_t frame_limit = hello->max_frame_size;
+        uint32_t record_limit = WLH_HOST_MAX_HCI_PACKET;
+        for (index = 0; index < hello->services_count; ++index) {
+            if (hello->services[index].service_id == WLH_SERVICE_BLUETOOTH)
+                service_found = true;
+        }
+        for (index = 0; index < hello->channels_count; ++index) {
+            if (hello->channels[index].channel_id ==
+                WLH_CHANNEL_BLUETOOTH_HCI) {
+                channel_found = true;
+                if (hello->channels[index].max_frame_payload != 0u &&
+                    hello->channels[index].max_frame_payload < record_limit)
+                    record_limit = hello->channels[index].max_frame_payload;
+            }
+        }
+        if (frame_limit > host->config.max_frame_size)
+            frame_limit = host->config.max_frame_size;
+        if (frame_limit >= WLH_FRAME_HEADER_SIZE + WLH_RAW_RECORD_HEADER_SIZE) {
+            uint32_t payload_limit = frame_limit - WLH_FRAME_HEADER_SIZE -
+                                     (uint32_t)WLH_RAW_RECORD_HEADER_SIZE;
+            if (payload_limit < record_limit)
+                record_limit = payload_limit;
+        } else {
+            channel_found = false;
+        }
+        host->bluetooth_supported = service_found && channel_found;
+        host->bluetooth_max_record = record_limit;
+        host->bluetooth_hci_stopped = false;
+        host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
+    }
     host->config.buffers.free(host->config.buffers.context, (uint8_t *)hello);
     host->diagnostics.last_peer_activity_ms = now_ms(host);
     set_state(host, WLH_HOST_STATE_READY);
@@ -588,6 +639,17 @@ static void handle_credit_update(
         uint32_t old = host->tx_credit[credit.channel_id];
         host->tx_credit[credit.channel_id] =
             UINT32_MAX - old < credit.units ? UINT32_MAX : old + credit.units;
+        if (credit.channel_id == WLH_CHANNEL_BLUETOOTH_HCI &&
+            host->config.bluetooth_hci_tx_ready != NULL) {
+            uint32_t inflight = host->bluetooth_tx_inflight;
+            uint32_t updated = host->tx_credit[credit.channel_id];
+            bool was_usable = old > inflight;
+            bool now_usable = updated > inflight;
+            if (!was_usable && now_usable)
+                host->config.bluetooth_hci_tx_ready(
+                    host->config.bluetooth_context
+                );
+        }
         if (host->state == WLH_HOST_STATE_CONGESTED)
             set_state(host, WLH_HOST_STATE_READY);
     }
@@ -649,6 +711,10 @@ static void handle_session_changed(
     host->session_id = 0u;
     memset(host->tx_credit, 0, sizeof(host->tx_credit));
     memset(host->rx_sequence_valid, 0, sizeof(host->rx_sequence_valid));
+    host->bluetooth_supported = false;
+    host->bluetooth_hci_stopped = false;
+    host->bluetooth_tx_inflight = 0u;
+    host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
     (void)send_hello(host);
 }
 
@@ -736,6 +802,10 @@ static void process_transport_lost(wlh_host_t *host) {
     memset(host->tx_credit, 0, sizeof(host->tx_credit));
     memset(host->tx_sequence, 0, sizeof(host->tx_sequence));
     memset(host->rx_sequence_valid, 0, sizeof(host->rx_sequence_valid));
+    host->bluetooth_supported = false;
+    host->bluetooth_hci_stopped = false;
+    host->bluetooth_tx_inflight = 0u;
+    host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
     set_state(host, WLH_HOST_STATE_RECOVERING);
     if (host->config.transport.stop(
             host->config.transport.context, transport_stop_complete, host
@@ -807,6 +877,16 @@ static void host_worker(void *argument) {
                 );
             } else if (job.kind == WLH_HOST_JOB_ETHERNET_TX) {
                 wlh_host_data_job_t *data = job.payload;
+                (void)send_payload_frame(
+                    host, data->channel, data->data, data->size, false
+                );
+                host->config.buffers.free(
+                    host->config.buffers.context, (uint8_t *)data
+                );
+            } else if (job.kind == WLH_HOST_JOB_BLUETOOTH_TX) {
+                wlh_host_data_job_t *data = job.payload;
+                if (host->bluetooth_tx_inflight > 0u)
+                    host->bluetooth_tx_inflight--;
                 (void)send_payload_frame(
                     host, data->channel, data->data, data->size, false
                 );
@@ -1028,9 +1108,105 @@ static uint32_t host_next_wait_ms(const wlh_host_t *host) {
                                  : deadline_wait_ms(current, nearest);
 }
 
-static wlh_host_result_t process_frame(
-    wlh_host_t *host, const uint8_t *frame, size_t size
+static bool hci_rx_record_valid(
+    const wlh_host_t *host, const wlh_raw_record_view_t *record
 ) {
+    if (record->payload_size > host->bluetooth_max_record)
+        return false;
+    switch (record->record_type) {
+    case WLH_H4_TYPE_ACL:
+        return record->payload_size >= 4u &&
+               (size_t)((uint16_t)record->payload[2] |
+                        ((uint16_t)record->payload[3] << 8)) +
+                       4u ==
+                   record->payload_size;
+    case WLH_H4_TYPE_EVENT:
+        return record->payload_size >= 2u &&
+               (size_t)record->payload[1] + 2u == record->payload_size;
+    default:
+        /* Commands only flow Host -> Controller; SCO/ISO are unsupported. */
+        return false;
+    }
+}
+
+static void bluetooth_fault(wlh_host_t *host, uint32_t reason) {
+    wlh_host_bluetooth_state_event_t event;
+    host->diagnostics.hci_malformed++;
+    host->bluetooth_hci_stopped = true;
+    host->bluetooth_state = WLH_BLUETOOTH_STATE_ERROR;
+    WLH_LOGW(
+        "wlh_host",
+        "bluetooth fault, HCI stopped (reason %lu)",
+        (unsigned long)reason
+    );
+    memset(&event, 0, sizeof(event));
+    event.state = WLH_BLUETOOTH_STATE_ERROR;
+    event.reason = reason;
+    (void)dispatch_event(
+        host,
+        WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED,
+        WLH_SERVICE_BLUETOOTH,
+        WLH_BLUETOOTH_EVENT_STATE_CHANGED,
+        (const uint8_t *)&event,
+        sizeof(event)
+    );
+}
+
+static WLH_NOINLINE wlh_host_result_t process_hci_frame(
+    wlh_host_t *host, const uint8_t *payload, size_t payload_size
+) {
+    wlh_raw_record_iterator_t iterator;
+    wlh_raw_record_view_t record;
+    wlh_wire_result_t record_result = WLH_WIRE_INVALID_ARGUMENT;
+    bool delivered = true;
+
+    if (host->bluetooth_hci_stopped) {
+        host->diagnostics.hci_drops++;
+        return WLH_HOST_INVALID_STATE;
+    }
+    /* Validate the whole frame before delivering anything: a malformed record
+       must never be truncated or partially delivered. */
+    if (payload_size != 0u &&
+        wlh_raw_record_iterator_init(&iterator, payload, payload_size) ==
+            WLH_WIRE_OK) {
+        while ((record_result =
+                    wlh_raw_record_iterator_next(&iterator, &record)) ==
+               WLH_WIRE_OK) {
+            if (!hci_rx_record_valid(host, &record)) {
+                record_result = WLH_WIRE_INVALID_ARGUMENT;
+                break;
+            }
+        }
+    }
+    if (record_result != WLH_WIRE_END) {
+        bluetooth_fault(host, WLH_HOST_BLUETOOTH_REASON_MALFORMED_HCI);
+        return WLH_HOST_PROTOCOL_ERROR;
+    }
+    (void)wlh_raw_record_iterator_init(&iterator, payload, payload_size);
+    while (wlh_raw_record_iterator_next(&iterator, &record) == WLH_WIRE_OK) {
+        if (host->config.bluetooth_hci_rx == NULL ||
+            host->config.bluetooth_hci_rx(
+                host->config.bluetooth_context,
+                record.record_type,
+                record.payload,
+                record.payload_size
+            ) != WLH_HOST_OK) {
+            host->diagnostics.hci_drops++;
+            delivered = false;
+            break;
+        }
+    }
+    /* Withhold the credit when the adapter rejects a packet: HCI must not
+       silently drop, so the peer stays backpressured until recovery. */
+    if (!delivered)
+        return WLH_HOST_PENDING_FULL;
+    if (send_credit_update(host, WLH_CHANNEL_BLUETOOTH_HCI) != WLH_HOST_OK)
+        WLH_LOGW("wlh_host", "HCI credit update failed");
+    return WLH_HOST_OK;
+}
+
+static WLH_NOINLINE wlh_host_result_t
+process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
     wlh_frame_header_t header;
     const uint8_t *frame_payload;
     size_t frame_payload_size;
@@ -1064,6 +1240,10 @@ static wlh_host_result_t process_frame(
         );
         cancel_pending(host, WLH_HOST_SESSION_CHANGED);
         host->session_id = 0u;
+        host->bluetooth_supported = false;
+        host->bluetooth_hci_stopped = false;
+        host->bluetooth_tx_inflight = 0u;
+        host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
         set_state(host, WLH_HOST_STATE_RECOVERING);
         (void)send_hello(host);
         return WLH_HOST_SESSION_CHANGED;
@@ -1086,33 +1266,50 @@ static wlh_host_result_t process_frame(
     host->diagnostics.last_peer_activity_ms = now_ms(host);
 
     // Dispatch by channel.
+    if (header.channel == WLH_CHANNEL_BLUETOOTH_HCI)
+        return process_hci_frame(host, frame_payload, frame_payload_size);
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
         header.channel == WLH_CHANNEL_ETHERNET_AP) {
-        bool event_dispatched = false;
-        bool payload_valid;
-        uint32_t raw_size = 0u;
+        bool dispatch_failed = false;
+        bool payload_valid = frame_payload_size != 0u;
+        wlh_raw_record_iterator_t iterator;
+        wlh_raw_record_view_t record;
+        wlh_wire_result_t record_result = WLH_WIRE_INVALID_ARGUMENT;
         wlh_host_result_t credit_result;
 
-        payload_valid = frame_payload_size >= 8u && frame_payload[0] == 1u &&
-                        frame_payload[2] == 8u && frame_payload[3] == 0u;
-        if (payload_valid) {
-            raw_size = (uint32_t)frame_payload[4] |
-                       ((uint32_t)frame_payload[5] << 8) |
-                       ((uint32_t)frame_payload[6] << 16) |
-                       ((uint32_t)frame_payload[7] << 24);
-            payload_valid = (size_t)raw_size + 8u == frame_payload_size;
+        /* Validate every aggregated record before dispatching any of them,
+           so a malformed tail cannot partially deliver a frame. */
+        if (payload_valid && wlh_raw_record_iterator_init(
+                                 &iterator, frame_payload, frame_payload_size
+                             ) == WLH_WIRE_OK) {
+            while ((record_result =
+                        wlh_raw_record_iterator_next(&iterator, &record)) ==
+                   WLH_WIRE_OK) {
+            }
         }
+        payload_valid = payload_valid && record_result == WLH_WIRE_END;
         if (payload_valid) {
-            event_dispatched = dispatch_event(
-                host,
-                header.channel == WLH_CHANNEL_ETHERNET_STA
-                    ? WLH_HOST_EVENT_ETHERNET_STA_RX
-                    : WLH_HOST_EVENT_ETHERNET_AP_RX,
-                0u,
-                0u,
-                frame_payload + 8u,
-                raw_size
+            (void)wlh_raw_record_iterator_init(
+                &iterator, frame_payload, frame_payload_size
             );
+            while (wlh_raw_record_iterator_next(&iterator, &record) ==
+                   WLH_WIRE_OK) {
+                if (record.record_type != 1u) {
+                    continue;
+                }
+                if (!dispatch_event(
+                        host,
+                        header.channel == WLH_CHANNEL_ETHERNET_STA
+                            ? WLH_HOST_EVENT_ETHERNET_STA_RX
+                            : WLH_HOST_EVENT_ETHERNET_AP_RX,
+                        0u,
+                        0u,
+                        record.payload,
+                        record.payload_size
+                    )) {
+                    dispatch_failed = true;
+                }
+            }
         }
         /* Return the credit even when the payload is rejected. The peer spent
            one credit to deliver this frame; withholding it on a drop turns a
@@ -1135,7 +1332,7 @@ static wlh_host_result_t process_frame(
             );
             return WLH_HOST_PROTOCOL_ERROR;
         }
-        return event_dispatched ? WLH_HOST_OK : WLH_HOST_NO_MEMORY;
+        return dispatch_failed ? WLH_HOST_NO_MEMORY : WLH_HOST_OK;
     }
     if (header.channel == WLH_CHANNEL_LINK_CONTROL ||
         header.channel == WLH_CHANNEL_CONTROL_RPC) {
@@ -1213,6 +1410,35 @@ static wlh_host_result_t process_frame(
                 envelope.method_id,
                 payload,
                 payload_size
+            );
+            return WLH_HOST_OK;
+        }
+
+        if (envelope.kind == WLH_RPC_KIND_EVENT &&
+            envelope.service_id == WLH_SERVICE_BLUETOOTH &&
+            envelope.method_id == WLH_BLUETOOTH_EVENT_STATE_CHANGED) {
+            wlh_protocol_v1_BluetoothStateChangedEvent decoded =
+                wlh_protocol_v1_BluetoothStateChangedEvent_init_zero;
+            pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
+            wlh_host_bluetooth_state_event_t event;
+            if (!pb_decode(
+                    &stream,
+                    wlh_protocol_v1_BluetoothStateChangedEvent_fields,
+                    &decoded
+                ) ||
+                (uint32_t)decoded.state > WLH_BLUETOOTH_STATE_ERROR)
+                return WLH_HOST_PROTOCOL_ERROR;
+            memset(&event, 0, sizeof(event));
+            event.state = (wlh_bluetooth_state_t)decoded.state;
+            event.reason = decoded.reason;
+            host->bluetooth_state = event.state;
+            dispatch_event(
+                host,
+                WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED,
+                envelope.service_id,
+                envelope.method_id,
+                (const uint8_t *)&event,
+                sizeof(event)
             );
             return WLH_HOST_OK;
         }
@@ -1563,6 +1789,300 @@ wlh_host_result_t wlh_host_wifi_stop_ap(
         completion,
         context
     );
+}
+
+static wlh_host_result_t bluetooth_check_supported(wlh_host_t *host) {
+    bool supported;
+    if (!host->worker_started)
+        return WLH_HOST_INVALID_STATE;
+    (void)host->config.osal.mutex_lock(
+        host->config.osal.context, &host->state_mutex, WLH_OSAL_WAIT_FOREVER
+    );
+    supported = host->bluetooth_supported;
+    host->config.osal.mutex_unlock(
+        host->config.osal.context, &host->state_mutex
+    );
+    return supported ? WLH_HOST_OK : WLH_HOST_NOT_SUPPORTED;
+}
+
+static wlh_host_result_t bluetooth_request(
+    wlh_host_t *host,
+    uint16_t method,
+    const pb_msgdesc_t *fields,
+    const void *message,
+    wlh_rpc_completion_fn completion,
+    void *context
+) {
+    wlh_host_result_t result;
+    if (host == NULL)
+        return WLH_HOST_INVALID_ARGUMENT;
+    result = bluetooth_check_supported(host);
+    if (result != WLH_HOST_OK)
+        return result;
+    return rpc_message_request(
+        host,
+        WLH_SERVICE_BLUETOOTH,
+        method,
+        fields,
+        message,
+        completion,
+        context
+    );
+}
+
+wlh_host_result_t wlh_host_bluetooth_initialize(
+    wlh_host_t *host,
+    uint32_t feature_flags,
+    wlh_rpc_completion_fn completion,
+    void *context
+) {
+    wlh_protocol_v1_BluetoothInitializeRequest request =
+        wlh_protocol_v1_BluetoothInitializeRequest_init_zero;
+    request.transport =
+        wlh_protocol_v1_BluetoothTransport_BLUETOOTH_TRANSPORT_HCI;
+    request.feature_flags = feature_flags;
+    return bluetooth_request(
+        host,
+        WLH_BLUETOOTH_METHOD_INITIALIZE,
+        wlh_protocol_v1_BluetoothInitializeRequest_fields,
+        &request,
+        completion,
+        context
+    );
+}
+
+wlh_host_result_t wlh_host_bluetooth_enable(
+    wlh_host_t *host,
+    uint32_t mode_flags,
+    wlh_rpc_completion_fn completion,
+    void *context
+) {
+    wlh_protocol_v1_BluetoothEnableRequest request =
+        wlh_protocol_v1_BluetoothEnableRequest_init_zero;
+    request.mode_flags = mode_flags;
+    return bluetooth_request(
+        host,
+        WLH_BLUETOOTH_METHOD_ENABLE,
+        wlh_protocol_v1_BluetoothEnableRequest_fields,
+        &request,
+        completion,
+        context
+    );
+}
+
+wlh_host_result_t wlh_host_bluetooth_disable(
+    wlh_host_t *host, wlh_rpc_completion_fn completion, void *context
+) {
+    wlh_protocol_v1_Empty request = wlh_protocol_v1_Empty_init_zero;
+    return bluetooth_request(
+        host,
+        WLH_BLUETOOTH_METHOD_DISABLE,
+        wlh_protocol_v1_Empty_fields,
+        &request,
+        completion,
+        context
+    );
+}
+
+wlh_host_result_t wlh_host_bluetooth_deinitialize(
+    wlh_host_t *host,
+    bool release_memory,
+    wlh_rpc_completion_fn completion,
+    void *context
+) {
+    wlh_protocol_v1_BluetoothDeinitializeRequest request =
+        wlh_protocol_v1_BluetoothDeinitializeRequest_init_zero;
+    request.release_memory = release_memory;
+    return bluetooth_request(
+        host,
+        WLH_BLUETOOTH_METHOD_DEINITIALIZE,
+        wlh_protocol_v1_BluetoothDeinitializeRequest_fields,
+        &request,
+        completion,
+        context
+    );
+}
+
+typedef struct wlh_bluetooth_info_request {
+    wlh_host_t *host;
+    wlh_host_bluetooth_info_fn completion;
+    void *context;
+} wlh_bluetooth_info_request_t;
+
+static void bluetooth_info_completion(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const uint8_t *payload,
+    size_t payload_size
+) {
+    wlh_bluetooth_info_request_t *request = context;
+    wlh_host_t *host = request->host;
+    wlh_bluetooth_controller_info_t info;
+    const wlh_bluetooth_controller_info_t *decoded = NULL;
+
+    if (result == WLH_HOST_OK) {
+        wlh_protocol_v1_BluetoothControllerInfo message =
+            wlh_protocol_v1_BluetoothControllerInfo_init_zero;
+        pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
+        if (pb_decode(
+                &stream,
+                wlh_protocol_v1_BluetoothControllerInfo_fields,
+                &message
+            ) &&
+            (uint32_t)message.state <= WLH_BLUETOOTH_STATE_ERROR &&
+            (message.public_address.size == 0u ||
+             message.public_address.size == 6u)) {
+            memset(&info, 0, sizeof(info));
+            info.state = (wlh_bluetooth_state_t)message.state;
+            info.has_public_address = message.public_address.size == 6u;
+            if (info.has_public_address)
+                memcpy(info.public_address, message.public_address.bytes, 6u);
+            info.hci_version = (uint8_t)message.hci_version;
+            info.manufacturer_id = (uint16_t)message.manufacturer_id;
+            info.feature_bits = message.feature_bits;
+            info.max_hci_packet = message.max_hci_packet;
+            decoded = &info;
+        } else {
+            result = WLH_HOST_PROTOCOL_ERROR;
+        }
+    }
+    request->completion(
+        request->context, result, status_domain, status_code, decoded
+    );
+    host->config.buffers.free(host->config.buffers.context, (uint8_t *)request);
+}
+
+wlh_host_result_t wlh_host_bluetooth_get_info(
+    wlh_host_t *host, wlh_host_bluetooth_info_fn completion, void *context
+) {
+    wlh_protocol_v1_Empty message = wlh_protocol_v1_Empty_init_zero;
+    wlh_bluetooth_info_request_t *request;
+    wlh_host_result_t result;
+
+    if (host == NULL || completion == NULL)
+        return WLH_HOST_INVALID_ARGUMENT;
+    result = bluetooth_check_supported(host);
+    if (result != WLH_HOST_OK)
+        return result;
+    request = (wlh_bluetooth_info_request_t *)host->config.buffers.alloc(
+        host->config.buffers.context, sizeof(*request)
+    );
+    if (request == NULL)
+        return WLH_HOST_NO_MEMORY;
+    request->host = host;
+    request->completion = completion;
+    request->context = context;
+
+    result = rpc_message_request(
+        host,
+        WLH_SERVICE_BLUETOOTH,
+        WLH_BLUETOOTH_METHOD_GET_INFO,
+        wlh_protocol_v1_Empty_fields,
+        &message,
+        bluetooth_info_completion,
+        request
+    );
+    if (result != WLH_HOST_OK)
+        host->config.buffers.free(
+            host->config.buffers.context, (uint8_t *)request
+        );
+    return result;
+}
+
+static void bluetooth_release_inflight(wlh_host_t *host) {
+    (void)host->config.osal.mutex_lock(
+        host->config.osal.context, &host->state_mutex, WLH_OSAL_WAIT_FOREVER
+    );
+    if (host->bluetooth_tx_inflight > 0u)
+        host->bluetooth_tx_inflight--;
+    host->config.osal.mutex_unlock(
+        host->config.osal.context, &host->state_mutex
+    );
+}
+
+wlh_host_result_t wlh_host_bluetooth_hci_send(
+    wlh_host_t *host, uint8_t h4_type, const uint8_t *packet, size_t size
+) {
+    uint8_t *record;
+    wlh_host_result_t result = WLH_HOST_OK;
+
+    if (host == NULL || packet == NULL || size == 0u || !host->worker_started)
+        return WLH_HOST_INVALID_ARGUMENT;
+    if (h4_type == WLH_H4_TYPE_SCO || h4_type == WLH_H4_TYPE_ISO)
+        return WLH_HOST_NOT_SUPPORTED;
+    if (h4_type == WLH_H4_TYPE_COMMAND) {
+        if (size < 3u || (size_t)packet[2] + 3u != size)
+            return WLH_HOST_INVALID_ARGUMENT;
+    } else if (h4_type == WLH_H4_TYPE_ACL) {
+        if (size < 4u ||
+            (size_t)((uint16_t)packet[2] | ((uint16_t)packet[3] << 8)) + 4u !=
+                size)
+            return WLH_HOST_INVALID_ARGUMENT;
+    } else {
+        return WLH_HOST_INVALID_ARGUMENT;
+    }
+
+    (void)host->config.osal.mutex_lock(
+        host->config.osal.context, &host->state_mutex, WLH_OSAL_WAIT_FOREVER
+    );
+    if (!host->bluetooth_supported)
+        result = WLH_HOST_NOT_SUPPORTED;
+    else if (host->bluetooth_hci_stopped)
+        result = WLH_HOST_INVALID_STATE;
+    else if (size > host->bluetooth_max_record)
+        result = WLH_HOST_INVALID_ARGUMENT;
+    else if (host->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] <=
+             host->bluetooth_tx_inflight)
+        result = WLH_HOST_NO_CREDIT;
+    else
+        host->bluetooth_tx_inflight++;
+    host->config.osal.mutex_unlock(
+        host->config.osal.context, &host->state_mutex
+    );
+    if (result != WLH_HOST_OK)
+        return result;
+
+    record = host->config.buffers.alloc(
+        host->config.buffers.context,
+        sizeof(wlh_host_data_job_t) + WLH_RAW_RECORD_HEADER_SIZE + size
+    );
+    if (record == NULL) {
+        bluetooth_release_inflight(host);
+        return WLH_HOST_NO_MEMORY;
+    }
+    {
+        wlh_host_data_job_t *job = (wlh_host_data_job_t *)record;
+        size_t record_size = 0;
+        job->channel = WLH_CHANNEL_BLUETOOTH_HCI;
+        if (wlh_raw_record_encode(
+                job->data,
+                WLH_RAW_RECORD_HEADER_SIZE + size,
+                &record_size,
+                h4_type,
+                0u,
+                packet,
+                size
+            ) != WLH_WIRE_OK) {
+            host->config.buffers.free(
+                host->config.buffers.context, (uint8_t *)job
+            );
+            bluetooth_release_inflight(host);
+            return WLH_HOST_INVALID_ARGUMENT;
+        }
+        job->size = record_size;
+        if (enqueue_job(
+                host, WLH_HOST_JOB_BLUETOOTH_TX, job, WLH_OSAL_NO_WAIT
+            ) != 0) {
+            host->config.buffers.free(
+                host->config.buffers.context, (uint8_t *)job
+            );
+            bluetooth_release_inflight(host);
+            return WLH_HOST_PENDING_FULL;
+        }
+    }
+    return WLH_HOST_OK;
 }
 
 typedef struct wlh_device_info_request {
@@ -2106,13 +2626,17 @@ static wlh_host_result_t ethernet_send(
         return WLH_HOST_NO_MEMORY;
     {
         wlh_host_data_job_t *job = (wlh_host_data_job_t *)record;
+        size_t record_size = 0;
         job->channel = channel;
-        job->size = 8u + size;
-        job->data[0] = 1u;
-        job->data[1] = 0u;
-        wlh_write_u16_le(job->data + 2u, 4u, 8u);
-        wlh_write_u32_le(job->data + 4u, 4u, (uint32_t)size);
-        memcpy(job->data + 8u, ethernet_frame, size);
+        if (wlh_raw_record_encode(
+                job->data, 8u + size, &record_size, 1u, 0u, ethernet_frame, size
+            ) != WLH_WIRE_OK) {
+            host->config.buffers.free(
+                host->config.buffers.context, (uint8_t *)job
+            );
+            return WLH_HOST_INVALID_ARGUMENT;
+        }
+        job->size = record_size;
         if (enqueue_job(
                 host, WLH_HOST_JOB_ETHERNET_TX, job, WLH_OSAL_NO_WAIT
             ) != 0) {

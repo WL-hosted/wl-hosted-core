@@ -20,6 +20,7 @@ extern "C" {
 #define WLH_HOST_MAX_KV_KEY_SIZE 64u
 #define WLH_HOST_MAX_KV_VALUE_SIZE 512u
 #define WLH_HOST_MAX_QUEUE_DEPTH 32u
+#define WLH_HOST_MAX_HCI_PACKET 1024u
 
 typedef enum wlh_host_result {
     WLH_HOST_OK = 0,
@@ -32,7 +33,8 @@ typedef enum wlh_host_result {
     WLH_HOST_PENDING_FULL = -7,
     WLH_HOST_TIMEOUT = -8,
     WLH_HOST_SESSION_CHANGED = -9,
-    WLH_HOST_NOT_FOUND = -10
+    WLH_HOST_NOT_FOUND = -10,
+    WLH_HOST_NOT_SUPPORTED = -11
 } wlh_host_result_t;
 
 typedef enum wlh_host_state {
@@ -58,7 +60,8 @@ typedef enum wlh_host_event_kind {
     WLH_HOST_EVENT_USER_MESSAGE_RESULT,
     WLH_HOST_EVENT_WIFI_AP_CLIENT_JOINED,
     WLH_HOST_EVENT_WIFI_AP_CLIENT_LEFT,
-    WLH_HOST_EVENT_ETHERNET_AP_RX
+    WLH_HOST_EVENT_ETHERNET_AP_RX,
+    WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED
 } wlh_host_event_kind_t;
 
 typedef struct wlh_host_event {
@@ -69,6 +72,35 @@ typedef struct wlh_host_event {
     const uint8_t *payload;
     size_t payload_size;
 } wlh_host_event_t;
+
+typedef enum wlh_bluetooth_state {
+    WLH_BLUETOOTH_STATE_UNSPECIFIED = 0,
+    WLH_BLUETOOTH_STATE_DISABLED = 1,
+    WLH_BLUETOOTH_STATE_ENABLED = 2,
+    WLH_BLUETOOTH_STATE_ERROR = 3
+} wlh_bluetooth_state_t;
+
+/* Sizes match the Bluetooth Controller protocol schema. */
+typedef struct wlh_bluetooth_controller_info {
+    wlh_bluetooth_state_t state;
+    uint8_t public_address[6];
+    bool has_public_address;
+    uint8_t hci_version;
+    uint16_t manufacturer_id;
+    uint64_t feature_bits;
+    uint32_t max_hci_packet;
+} wlh_bluetooth_controller_info_t;
+
+/* WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED payload; copy with memcpy because
+ * the event payload buffer carries no alignment guarantee. reason 0 means the
+ * change was caused by a normal command. */
+typedef struct wlh_host_bluetooth_state_event {
+    wlh_bluetooth_state_t state;
+    uint32_t reason;
+} wlh_host_bluetooth_state_event_t;
+
+/* Locally detected malformed HCI traffic. */
+#define WLH_HOST_BLUETOOTH_REASON_MALFORMED_HCI 1u
 
 typedef void (*wlh_transport_lifecycle_complete_fn)(
     void *completion_context, int status
@@ -137,6 +169,22 @@ typedef void (*wlh_rpc_completion_fn)(
     size_t payload_size
 );
 
+/*
+ * Controller->Host HCI delivery. payload excludes the H4 type octet and is
+ * only valid for the duration of the call, so the callback must copy or take
+ * ownership before returning. Return WLH_HOST_OK to have the Core return one
+ * channel credit to the coprocessor; any other value (e.g. a full queue)
+ * withholds the credit so backpressure forms naturally. Runs on the Core task
+ * with internal locks held: never block and never call back into the Core.
+ */
+typedef wlh_host_result_t (*wlh_host_bluetooth_hci_rx_fn)(
+    void *context, uint8_t h4_type, const uint8_t *payload, size_t payload_size
+);
+/* Fired only when usable HCI TX credit transitions from zero to positive.
+ * Runs on the Core task with internal locks held: only signal, never block or
+ * call wlh_host_bluetooth_hci_send inline. */
+typedef void (*wlh_host_bluetooth_hci_tx_ready_fn)(void *context);
+
 typedef struct wlh_host_config {
     wlh_transport_ops_t transport;
     wlh_buffer_ops_t buffers;
@@ -145,6 +193,10 @@ typedef struct wlh_host_config {
 
     wlh_host_event_fn on_event;
     void *event_context;
+
+    wlh_host_bluetooth_hci_rx_fn bluetooth_hci_rx;
+    wlh_host_bluetooth_hci_tx_ready_fn bluetooth_hci_tx_ready;
+    void *bluetooth_context;
 
     uint32_t max_frame_size;
     uint32_t rpc_timeout_ms;
@@ -167,6 +219,8 @@ typedef struct wlh_host_diagnostics {
     uint32_t peer_resets;
     uint32_t transport_resets;
     uint32_t buffer_allocation_failures;
+    uint32_t hci_malformed;
+    uint32_t hci_drops;
     uint64_t last_peer_activity_ms;
 } wlh_host_diagnostics_t;
 
@@ -195,6 +249,12 @@ typedef struct wlh_host {
 
     wlh_pending_rpc_t pending[WLH_HOST_MAX_PENDING];
     wlh_host_diagnostics_t diagnostics;
+
+    bool bluetooth_supported;
+    bool bluetooth_hci_stopped;
+    uint32_t bluetooth_tx_inflight;
+    uint32_t bluetooth_max_record;
+    wlh_bluetooth_state_t bluetooth_state;
 
     uint64_t started_ms;
 
@@ -282,6 +342,53 @@ wlh_host_result_t wlh_host_wifi_start_ap(
 );
 wlh_host_result_t wlh_host_wifi_stop_ap(
     wlh_host_t *host, wlh_rpc_completion_fn completion, void *context
+);
+
+/* Bluetooth Controller service client. Lifecycle calls return
+ * WLH_HOST_NOT_SUPPORTED when the negotiated Hello lacks the Bluetooth
+ * service or the HCI channel. */
+wlh_host_result_t wlh_host_bluetooth_initialize(
+    wlh_host_t *host,
+    uint32_t feature_flags,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_bluetooth_enable(
+    wlh_host_t *host,
+    uint32_t mode_flags,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_bluetooth_disable(
+    wlh_host_t *host, wlh_rpc_completion_fn completion, void *context
+);
+wlh_host_result_t wlh_host_bluetooth_deinitialize(
+    wlh_host_t *host,
+    bool release_memory,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+
+/* info is NULL unless result == WLH_HOST_OK, and is valid only for the
+ * duration of the call. */
+typedef void (*wlh_host_bluetooth_info_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const wlh_bluetooth_controller_info_t *info
+);
+
+wlh_host_result_t wlh_host_bluetooth_get_info(
+    wlh_host_t *host, wlh_host_bluetooth_info_fn completion, void *context
+);
+
+/* Host->Controller HCI. Accepts only H4 Command (1) and ACL (2); SCO and ISO
+ * return WLH_HOST_NOT_SUPPORTED. packet excludes the H4 type octet. Returns
+ * WLH_HOST_NO_CREDIT when the channel has no usable credit; the packet is not
+ * queued and the caller retries after bluetooth_hci_tx_ready fires. */
+wlh_host_result_t wlh_host_bluetooth_hci_send(
+    wlh_host_t *host, uint8_t h4_type, const uint8_t *packet, size_t size
 );
 
 /* Device Information service client. Sizes match the protocol schema. */
