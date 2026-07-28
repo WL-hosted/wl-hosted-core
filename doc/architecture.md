@@ -10,9 +10,10 @@ WL-hosted 协议在 Core 内部被抽象为三层：
 flowchart TB
     subgraph Service["Service Layer"]
         S1["Wi-Fi"]
-        S2["Device Info"]
-        S3["User Passthrough"]
-        S4["OTA / Diagnostics / Log<br/>（预留）"]
+        S2["Bluetooth"]
+        S3["Device Info"]
+        S4["User Passthrough"]
+        S5["OTA / Diagnostics / Log / IO / ADC / KV<br/>（按需启用）"]
     end
 
     subgraph Channel["Channel Layer"]
@@ -25,6 +26,7 @@ flowchart TB
         C6["DIAGNOSTIC_STREAM"]
         C7["LOG_STREAM"]
         C8["USER_PASSTHROUGH"]
+        C9["BLUETOOTH_HCI_ADV"]
     end
 
     subgraph Frame["Frame Layer"]
@@ -54,7 +56,9 @@ flowchart TB
 - `LINK_CONTROL`（`0x00`）：仅 Link Service 使用，承载 Hello、Heartbeat、Credit Update。
 - `CONTROL_RPC`（`0x01`）：除 Link 外所有 Service 的 Request/Response/Event。
 - `ETHERNET_STA`/`ETHERNET_AP`（`0x02`/`0x03`）：原始 L2 frame 数据面。
-- `BLUETOOTH_HCI`、`OTA_STREAM`、`DIAGNOSTIC_STREAM`、`LOG_STREAM`、`USER_PASSTHROUGH`：大数据流通道。
+- `BLUETOOTH_HCI`（`0x04`）：可靠 HCI 数据面（Command/ACL/SCO/Event/ISO）。
+- `BLUETOOTH_HCI_ADV`（`0x09`）：best-effort 的 LE 广播/扫描报告事件，发送方无 credit 时直接丢弃，避免阻塞 `BLUETOOTH_HCI` 上的可靠控制事件。
+- `OTA_STREAM`、`DIAGNOSTIC_STREAM`、`LOG_STREAM`、`USER_PASSTHROUGH`：其他大数据流通道。
 
 控制面与数据面严格分离。任何 Service 的 RPC 控制不得借道数据 Channel；大数据流也不得塞进 protobuf payload。
 

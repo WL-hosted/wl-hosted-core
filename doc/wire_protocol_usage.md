@@ -139,6 +139,7 @@ flowchart LR
     Diag["Diagnostics"] --> C6["WLH_CHANNEL_DIAGNOSTIC_STREAM"]
     Log["Log Stream"] --> C7["WLH_CHANNEL_LOG_STREAM"]
     User["User Passthrough"] --> C8["WLH_CHANNEL_USER_PASSTHROUGH"]
+    HCIAdv["Bluetooth HCI ADV"] --> C9["WLH_CHANNEL_BLUETOOTH_HCI_ADV"]
 ```
 
 控制面 RPC 不得使用数据 Channel；数据面大数据也不得塞进 protobuf payload。

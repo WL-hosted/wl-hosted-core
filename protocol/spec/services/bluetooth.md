@@ -11,6 +11,8 @@
 
 v1 标准模型是 Coprocessor 提供 Controller、Host 运行 BLE Host Stack。HCI packet 使用 Channel `0x04` 的 H4 Record（Command/ACL/SCO/Event/ISO），而不是 protobuf。地址必须为 6 字节；HCI Command 参数以及 ACL/ISO 长度还必须受 Controller 和协商 frame 上限约束。
 
+为缓解 active scanning 时广播报告泛洪队头阻塞可靠 HCI 事件的问题，v1 引入 best-effort Channel `0x09 BLUETOOTH_HCI_ADV`，仅承载 Controller→Host 的 LE 广播/扫描报告 Event（LE Meta 子事件 `0x02/0x0b/0x0d/0x0f`）。该通道由 Host 在 HelloRequest `channels` 中声明、Coprocessor 在 HelloResponse 中授予 Credit 后启用；未协商时报告退回 `0x04`。`0x09` 的 Credit 窗口刻意保持很小（默认 4），发送方无 Credit 时就地丢弃报告而不是背压；接收方即使丢弃 payload 也必须归还 Credit。其余 HCI（Command Complete/Status、连接事件、SM、ACL 等）必须走 `0x04` 可靠通道。
+
 Beken、GD32 和 Bouffalo 都具备高层 GAP/GATT API，但能力/状态模型差异较大；它们可由未来 Optional Service 定义，不得混入 Controller v1 或用厂商 struct 透传。
 
 ## 枚举

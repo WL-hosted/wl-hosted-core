@@ -31,6 +31,13 @@ wlh_host_result_t wlh_host_user_message_send(...);
 wlh_host_result_t wlh_host_ethernet_sta_send(...);
 wlh_host_result_t wlh_host_ethernet_ap_send(...);
 
+wlh_host_result_t wlh_host_bluetooth_initialize(...);
+wlh_host_result_t wlh_host_bluetooth_enable(...);
+wlh_host_result_t wlh_host_bluetooth_disable(...);
+wlh_host_result_t wlh_host_bluetooth_deinitialize(...);
+wlh_host_result_t wlh_host_bluetooth_get_info(...);
+wlh_host_result_t wlh_host_bluetooth_hci_send(...);
+
 void wlh_host_get_diagnostics(const wlh_host_t *host, wlh_host_diagnostics_t *diagnostics);
 ```
 
@@ -100,6 +107,19 @@ typedef void (*wlh_host_event_fn)(void *context, const wlh_host_event_t *event);
 | `WLH_HOST_EVENT_USER_MESSAGE_RESULT` | User Passthrough 结果事件 |
 | `WLH_HOST_EVENT_WIFI_AP_CLIENT_JOINED` | SoftAP 有客户端加入 |
 | `WLH_HOST_EVENT_WIFI_AP_CLIENT_LEFT` | SoftAP 有客户端离开 |
+| `WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED` | Bluetooth Controller 状态变化 |
+
+### bluetooth
+
+```c
+typedef wlh_host_result_t (*wlh_host_bluetooth_hci_rx_fn)(
+    void *context, uint8_t h4_type, const uint8_t *payload, size_t payload_size
+);
+typedef void (*wlh_host_bluetooth_hci_tx_ready_fn)(void *context);
+```
+
+- `bluetooth_hci_rx`：收到 Controller→Host HCI 包时调用，`payload` 不含 H4 type 字节，仅在该回调执行期间有效。返回值非 `WLH_HOST_OK` 会记录为 `hci_drops`，但 credit 仍归还对端；可靠投递由 Adapter 负责。
+- `bluetooth_hci_tx_ready`：当 Host→Controller 方向可用 credit 从 0 变为正时触发，用于通知 Adapter 恢复发送。
 
 ### 数值参数
 
@@ -211,6 +231,51 @@ wlh_host_ethernet_sta_send(host, frame, size);
 ```
 
 接收通过 `WLH_HOST_EVENT_ETHERNET_STA_RX` 事件，payload 为完整 L2 frame。
+
+## Bluetooth Controller
+
+Host 侧通过 Bluetooth Service 控制 Coprocessor 上的 Bluetooth Controller，并在 `WLH_CHANNEL_BLUETOOTH_HCI` 上收发 H4 HCI 包。
+
+### 生命周期
+
+```c
+wlh_host_bluetooth_initialize(host, feature_flags, completion, context);
+wlh_host_bluetooth_enable(host, mode_flags, completion, context);
+wlh_host_bluetooth_disable(host, completion, context);
+wlh_host_bluetooth_deinitialize(host, release_memory, completion, context);
+```
+
+Controller 状态变化通过 `WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED` 事件上报：
+
+```c
+wlh_host_bluetooth_state_event_t *bt =
+    (wlh_host_bluetooth_state_event_t *)event->payload;
+// bt->state：UNSPECIFIED / DISABLED / ENABLED / ERROR
+// bt->reason：0 表示正常命令导致；WLH_HOST_BLUETOOTH_REASON_MALFORMED_HCI 等为核心检测到的问题
+```
+
+若 Hello 未协商出 Bluetooth Service 或 HCI Channel，这些调用返回 `WLH_HOST_NOT_SUPPORTED`。
+
+### 查询信息
+
+```c
+wlh_host_bluetooth_get_info(host, info_completion, context);
+```
+
+成功时 `info_completion` 携带 `wlh_bluetooth_controller_info_t`，包含当前状态、public address、HCI version、manufacturer ID、feature bits 与 `max_hci_packet`。
+
+### HCI 发送
+
+```c
+wlh_host_bluetooth_hci_send(host, WLH_H4_TYPE_COMMAND, packet, size);
+wlh_host_bluetooth_hci_send(host, WLH_H4_TYPE_ACL, packet, size);
+```
+
+只支持 Command（1）与 ACL（2），`packet` 不含 H4 type 字节。无可用 credit 时返回 `WLH_HOST_NO_CREDIT`，调用者应在 `bluetooth_hci_tx_ready` 触发后重试。
+
+### HCI 接收
+
+可靠 HCI 事件与 ACL/SCO/ISO 数据通过 `bluetooth_hci_rx` 回调交付。LE 广播/扫描报告事件如果协商了 `WLH_CHANNEL_BLUETOOTH_HCI_ADV`，会走 best-effort 通道；否则仍落在 `WLH_CHANNEL_BLUETOOTH_HCI`。Adapter 应在回调内拷贝或接管数据，不得阻塞或回调 Host Core。
 
 ## 用户透传
 

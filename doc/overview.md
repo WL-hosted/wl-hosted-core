@@ -47,8 +47,8 @@ flowchart TB
 |---|---|---|
 | `protocol/` | Frame/RPC 编解码、protobuf/nanopb schema、协议规范 | `include/wlh/protocol.h` |
 | `common/` | 平台无关 OSAL 契约；按需启用 POSIX/FreeRTOS 适配 | `osal/include/wlh/osal.h` |
-| `host-core/` | Host 侧运行时：链路协商、session、RPC 匹配、credit、Wi-Fi/设备信息/Ethernet | `include/wlh/host.h` |
-| `coproc-core/` | Coprocessor 侧运行时：Hello 响应、Wi-Fi 后端抽象、事件注入、数据面转发 | `include/wlh/coproc.h` |
+| `host-core/` | Host 侧运行时：链路协商、session、RPC 匹配、credit、Wi-Fi/Bluetooth/设备信息/Ethernet | `include/wlh/host.h` |
+| `coproc-core/` | Coprocessor 侧运行时：Hello 响应、Wi-Fi/Bluetooth 后端抽象、事件注入、数据面转发 | `include/wlh/coproc.h` |
 
 ```mermaid
 flowchart LR
@@ -70,8 +70,8 @@ flowchart LR
 
 Core 不直接操作硬件引脚、USB/SPI/SDIO 寄存器或网络栈。所有平台相关行为通过回调注入：
 
-- Host Core：transport start/stop/submit_tx、buffer alloc/free、OSAL、executor post、event callback。
-- Coprocessor Core：submit_tx、buffer alloc/free、OSAL、Wi-Fi 后端回调、可选 device_info/user_passthrough/ethernet_rx。
+- Host Core：transport start/stop/submit_tx、buffer alloc/free、OSAL、executor post、event callback、可选 Bluetooth HCI rx/tx_ready。
+- Coprocessor Core：submit_tx、buffer alloc/free、OSAL、Wi-Fi/Bluetooth 后端回调、可选 device_info/user_passthrough/ethernet_rx。
 
 Adapter 的职责是把硬件中断、DMA 完成、RTOS 消息等转换为对 `wlh_host_on_frame()` 或 `wlh_coproc_on_frame()` 的非阻塞调用，以及把 Core 提交的 `submit_tx` 转换为实际总线发送。
 

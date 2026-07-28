@@ -22,20 +22,24 @@ CMake target 名为 `wlh_protocol`，也可通过 alias `wlh::protocol` 链接�
 Envelope、严格长度/保留位校验、SUM32、CRC-32C 和有界 little-endian helper。
 
 需要 protobuf payload 的 Core 可链接 `wlh_protocol_nanopb`（alias
-`wlh::protocol_nanopb`）。该 target 统一生成并编译全部标准 `proto/*.proto`，
-公开 generated include 目录，并传递链接 `wlh_nanopb_runtime`（alias
-`wlh::nanopb_runtime`）。这些 target 与 `wlh_protocol` 分离且
-`EXCLUDE_FROM_ALL`，wire-only consumer 不会触发 protobuf codegen/runtime。
+`wlh::protocol_nanopb`）。该 target 统一编译全部标准 `proto/*.proto` 对应
+的 `.pb.c/.pb.h`，公开 generated include 目录，并传递链接
+`wlh_nanopb_runtime`（alias `wlh::nanopb_runtime`）。这些 target 与
+`wlh_protocol` 分离且 `EXCLUDE_FROM_ALL`，wire-only consumer 不会触发
+protobuf codegen/runtime。
 
-安装 `protoc` 与 `protoc-gen-nanopb` 后，生成代码使用显式 target（不会成为
-离线 core build 的依赖）：
+如果系统已安装 `protoc` 与 `protoc-gen-nanopb`，CMake 会在构建时从
+`proto/*.proto` 实时生成代码；否则自动回退到仓库已提交的预生成源文件
+`generated/*.pb.c` / `generated/*.pb.h`，保证无 protoc 环境也能构建
+host-core/coproc-core。显式重新生成 target：
 
 ```sh
 cmake --build build --target generate_standard_nanopb
 cmake --build build --target generate_sim_nanopb
 ```
 
-同时编译、链接并执行标准 schema 和 simulator schema 的 nanopb smoke test：
+同时编译、链接并执行标准 schema 和 simulator schema 的 nanopb smoke test
+（必须已安装生成工具）：
 
 ```sh
 cmake -S . -B build-nanopb \
@@ -44,7 +48,8 @@ cmake --build build-nanopb
 ctest --test-dir build-nanopb --output-on-failure
 ```
 
-固定工具版本见 `proto/TOOLCHAIN.lock`，输入校验值见 `proto/SCHEMA.sha256`。生成结果暂不提交，本 Draft 先以 schema、静态上限和规范审查为主。
+固定工具版本见 `proto/TOOLCHAIN.lock`，输入校验值见 `proto/SCHEMA.sha256`。
+`generated/` 中的预生成文件与 `proto/*.proto` 保持同步，允许直接离线构建。
 
 `sim/` 是测试专用 IPC contract，不属于标准 WL-hosted wire schema，因而不
 加入 `proto/SCHEMA.sha256`。nanopb C runtime 的来源和许可证见

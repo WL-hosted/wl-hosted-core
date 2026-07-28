@@ -21,6 +21,11 @@ wlh_coproc_result_t wlh_coproc_ethernet_sta_send(...);
 wlh_coproc_result_t wlh_coproc_ethernet_ap_send(...);
 wlh_coproc_result_t wlh_coproc_user_message_result(...);
 
+wlh_coproc_result_t wlh_coproc_bluetooth_operation_complete(...);
+wlh_coproc_result_t wlh_coproc_bluetooth_info_result(...);
+wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(...);
+wlh_coproc_result_t wlh_coproc_bluetooth_fatal_error(...);
+
 void wlh_coproc_get_diagnostics(const wlh_coproc_t *coproc, wlh_coproc_diagnostics_t *diagnostics);
 ```
 
@@ -78,6 +83,27 @@ typedef struct wlh_coproc_user_passthrough_ops {
 ```
 
 可选。`on_message` 收到 Host 发送的用户消息，返回 0 表示接受。
+
+### bluetooth
+
+```c
+typedef struct wlh_coproc_bluetooth_ops {
+    void *context;
+    wlh_bluetooth_initialize_fn initialize;
+    wlh_bluetooth_enable_fn enable;
+    wlh_bluetooth_disable_fn disable;
+    wlh_bluetooth_deinitialize_fn deinitialize;
+    wlh_bluetooth_get_info_fn get_info;
+    wlh_bluetooth_hci_send_fn hci_send;
+    wlh_bluetooth_hci_tx_ready_fn hci_tx_ready;
+} wlh_coproc_bluetooth_ops_t;
+```
+
+可选。所有生命周期操作都是非阻塞提交，结果通过 `wlh_coproc_bluetooth_operation_complete()` / `wlh_coproc_bluetooth_info_result()` 返回。
+
+- `initialize`/`enable`/`disable`/`deinitialize`/`get_info`：按 Host 命令触发，需用对应的 `operation_id` 完成。
+- `hci_send`：Host→Controller HCI 包，`payload` 不含 H4 type 字节，仅在该调用期间有效。返回非 0 表示致命错误，Core 会停止 HCI 并进入 ERROR 状态。
+- `hci_tx_ready`：Controller→Host 方向可用 credit 从 0 变正时触发，用于通知后端恢复发送。
 
 ### buffers / osal
 
@@ -160,6 +186,40 @@ int my_wifi_disconnect(void *context);
 
 与 connect/disconnect 类似，分别启动/停止 SoftAP。
 
+## Bluetooth 后端回调约定
+
+所有回调运行在 Core task，必须是非阻塞提交。
+
+### initialize / enable / disable / deinitialize / get_info
+
+```c
+int my_bluetooth_initialize(void *context, uint32_t operation_id, uint32_t feature_flags);
+int my_bluetooth_enable(void *context, uint32_t operation_id, uint32_t mode_flags);
+int my_bluetooth_disable(void *context, uint32_t operation_id);
+int my_bluetooth_deinitialize(void *context, uint32_t operation_id, bool release_memory);
+int my_bluetooth_get_info(void *context, uint32_t operation_id);
+```
+
+完成后调用：
+
+```c
+wlh_coproc_bluetooth_operation_complete(coproc, operation_id, backend_status);
+// get_info 成功时额外携带信息：
+wlh_coproc_bluetooth_info_result(coproc, operation_id, 0, &info);
+```
+
+`backend_status` 为 0 表示成功；非 0 会映射为错误响应或 `BluetoothStateChangedEvent` 的原因。
+
+### hci_send
+
+```c
+int my_bluetooth_hci_send(
+    void *context, uint8_t h4_type, const uint8_t *payload, size_t payload_size
+);
+```
+
+收到 Host→Controller HCI 包。应拷贝或立即处理；返回非 0 会被 Core 视为致命错误，停止 HCI 并进入 ERROR 状态。
+
 ## 事件注入 API
 
 所有注入 API 都是非阻塞的，可以在任意任务上下文调用（但不能在 ISR 中调用）：
@@ -173,7 +233,30 @@ wlh_coproc_wifi_ap_client_joined(coproc, mac, rssi, assoc_id);
 wlh_coproc_wifi_ap_client_left(coproc, mac, assoc_id, ieee_reason);
 wlh_coproc_ethernet_sta_send(coproc, frame, size);
 wlh_coproc_user_message_result(coproc, endpoint, type, correlation_id, result, payload, size);
+
+/* Bluetooth */
+wlh_coproc_bluetooth_operation_complete(coproc, operation_id, 0);
+wlh_coproc_bluetooth_info_result(coproc, operation_id, 0, &info);
+wlh_coproc_bluetooth_hci_send(coproc, WLH_H4_TYPE_EVENT, event, event_size);
 ```
+
+## Bluetooth 数据面
+
+Coprocessor 收到 Controller→Host HCI 包后：
+
+```c
+wlh_coproc_bluetooth_hci_send(coproc, h4_type, packet, packet_size);
+```
+
+Core 会把它封装为 HCI Raw Record 发送给 Host。 reliable HCI（Command Complete/Status、连接事件、SM、ACL 等）走 `WLH_CHANNEL_BLUETOOTH_HCI`；LE 广播/扫描报告事件如果 Host 在 Hello 中声明了 `WLH_CHANNEL_BLUETOOTH_HCI_ADV`，则走该 best-effort 通道。该通道 credit 窗口很小（默认 4），无 credit 时 Core 返回 `WLH_COPROC_NO_CREDIT`，后端应保留数据并在 `hci_tx_ready` 触发后重试；对于广播报告这类可丢弃数据，后端也可以选择直接丢弃。
+
+如果后端检测到无法恢复的 HCI 错误（例如连续收到畸形包），可调用：
+
+```c
+wlh_coproc_bluetooth_fatal_error(coproc, WLH_COPROC_BLUETOOTH_REASON_MALFORMED_HCI);
+```
+
+Core 会把 Controller 状态机移入 `ERROR` 并广播 `BluetoothStateChangedEvent`。
 
 ## Ethernet 数据面
 
@@ -214,7 +297,7 @@ wlh_coproc_diagnostics_t diag;
 wlh_coproc_get_diagnostics(coproc, &diag);
 ```
 
-包含状态、session_id、tx/rx 帧数、checksum 错误、sequence gap、RPC 请求数、peer reset 等。
+包含状态、session_id、tx/rx 帧数、checksum 错误、sequence gap、RPC 请求数、peer reset 等，还包含 `hci_malformed`、`hci_drops`、`hci_adv_drops`、`bluetooth_mismatches` 等 Bluetooth 相关计数。
 
 ## 常见集成错误
 
@@ -223,5 +306,7 @@ wlh_coproc_get_diagnostics(coproc, &diag);
 - 在 ISR 中调用 `wlh_coproc_wifi_connected()` 等注入 API。
 - `submit_tx` 成功后未在 tx_complete 中释放 buffer。
 - `ethernet_rx` 中直接处理完整网络栈路径，导致 Core task 阻塞。
+- 在 `bluetooth.hci_send` 中同步等待硬件发送完成。
+- 收到畸形 HCI 后未调用 `wlh_coproc_bluetooth_fatal_error()` 而继续发送错误数据。
 
 下一篇推荐阅读：[lifecycle.md](lifecycle.md)。
