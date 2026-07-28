@@ -15,6 +15,13 @@ extern "C" {
 #define WLH_COPROC_CHANNEL_COUNT 256u
 #define WLH_COPROC_MAX_FRAME_SIZE 4096u
 #define WLH_COPROC_MAX_QUEUE_DEPTH 32u
+#define WLH_COPROC_MAX_HCI_PACKET 1024u
+#define WLH_COPROC_BLUETOOTH_INITIAL_CREDIT 16u
+
+/* Reason codes carried by BluetoothStateChangedEvent when the core itself
+ * enters the ERROR state. Adapters may pass their own codes to
+ * wlh_coproc_bluetooth_fatal_error(). */
+#define WLH_COPROC_BLUETOOTH_REASON_MALFORMED_HCI 1u
 
 typedef enum wlh_coproc_result {
     WLH_COPROC_OK = 0,
@@ -258,6 +265,55 @@ typedef struct wlh_coproc_user_passthrough_ops {
     wlh_coproc_user_message_fn on_message;
 } wlh_coproc_user_passthrough_ops_t;
 
+/* Bluetooth Controller service (optional). All lifecycle operations are
+ * nonblocking submissions; results arrive via
+ * wlh_coproc_bluetooth_operation_complete() /
+ * wlh_coproc_bluetooth_info_result() with the same operation_id. */
+typedef int (*wlh_bluetooth_initialize_fn)(
+    void *context, uint32_t operation_id, uint32_t feature_flags
+);
+typedef int (*wlh_bluetooth_enable_fn)(
+    void *context, uint32_t operation_id, uint32_t mode_flags
+);
+typedef int (*wlh_bluetooth_disable_fn)(void *context, uint32_t operation_id);
+typedef int (*wlh_bluetooth_deinitialize_fn)(
+    void *context, uint32_t operation_id, bool release_memory
+);
+typedef int (*wlh_bluetooth_get_info_fn)(void *context, uint32_t operation_id);
+/* Host->Controller HCI packet. `payload` excludes the H4 type byte and is
+ * valid only for the duration of the call; copy or reject without blocking.
+ * A nonzero return keeps the packet undelivered (core withholds the credit
+ * and stops session HCI), so reject only on fatal conditions. */
+typedef int (*wlh_bluetooth_hci_send_fn)(
+    void *context, uint8_t h4_type, const uint8_t *payload, size_t payload_size
+);
+/* Optional. Fired when the usable Controller->Host credit goes from zero to
+ * positive. Runs on the core task with internal locks held: only signal the
+ * backend task here; never call wlh_coproc_bluetooth_hci_send() inline. */
+typedef void (*wlh_bluetooth_hci_tx_ready_fn)(void *context);
+
+typedef struct wlh_coproc_bluetooth_ops {
+    void *context;
+    wlh_bluetooth_initialize_fn initialize;
+    wlh_bluetooth_enable_fn enable;
+    wlh_bluetooth_disable_fn disable;
+    wlh_bluetooth_deinitialize_fn deinitialize;
+    wlh_bluetooth_get_info_fn get_info;
+    wlh_bluetooth_hci_send_fn hci_send;
+    wlh_bluetooth_hci_tx_ready_fn hci_tx_ready;
+} wlh_coproc_bluetooth_ops_t;
+
+/* Controller information reported by the backend after GET_INFO. The core
+ * supplies the lifecycle state itself; the backend fills the rest. */
+typedef struct wlh_coproc_bluetooth_info {
+    uint8_t public_address[6];
+    bool has_public_address;
+    uint8_t hci_version;
+    uint16_t manufacturer_id;
+    uint64_t feature_bits;
+    uint32_t max_hci_packet;
+} wlh_coproc_bluetooth_info_t;
+
 typedef struct wlh_coproc_diagnostics {
     wlh_coproc_state_t state;
     uint32_t session_id;
@@ -267,6 +323,9 @@ typedef struct wlh_coproc_diagnostics {
     uint32_t sequence_gaps;
     uint32_t rpc_requests;
     uint32_t peer_resets;
+    uint32_t hci_malformed;
+    uint32_t hci_drops;
+    uint32_t bluetooth_mismatches;
     uint64_t last_peer_activity_ms;
 } wlh_coproc_diagnostics_t;
 
@@ -278,6 +337,7 @@ typedef struct wlh_coproc_config {
     wlh_coproc_adc_ops_t adc;
     wlh_coproc_kv_ops_t kv;
     wlh_coproc_user_passthrough_ops_t user_passthrough;
+    wlh_coproc_bluetooth_ops_t bluetooth;
     wlh_coproc_buffer_ops_t buffers;
     wlh_osal_ops_t osal;
     uint32_t max_frame_size;
@@ -314,6 +374,18 @@ typedef struct wlh_coproc {
         uint32_t session_id;
         uint32_t request_id;
     } wifi_initialize_pending;
+    struct {
+        bool active;
+        uint32_t operation_id;
+        uint32_t session_id;
+        uint32_t request_id;
+        uint16_t method_id;
+    } bluetooth_pending;
+    /* Wire BluetoothControllerState value tracked by the core state machine. */
+    uint32_t bluetooth_state;
+    /* Controller->Host HCI jobs queued but not yet sent; reserves credit. */
+    uint32_t bluetooth_tx_inflight;
+    bool bluetooth_hci_stopped;
 } wlh_coproc_t;
 
 typedef struct wlh_coproc_bss {
@@ -389,6 +461,32 @@ wlh_coproc_result_t wlh_coproc_user_message_result(
     int32_t result,
     const uint8_t *payload,
     size_t payload_size
+);
+/* Completion for INITIALIZE/ENABLE/DISABLE/DEINITIALIZE. Nonblocking ingress,
+ * callable from any task context. */
+wlh_coproc_result_t wlh_coproc_bluetooth_operation_complete(
+    wlh_coproc_t *coproc, uint32_t operation_id, int backend_status
+);
+/* Completion for GET_INFO. `info` may be NULL only when backend_status is
+ * nonzero. */
+wlh_coproc_result_t wlh_coproc_bluetooth_info_result(
+    wlh_coproc_t *coproc,
+    uint32_t operation_id,
+    int backend_status,
+    const wlh_coproc_bluetooth_info_t *info
+);
+/* Controller->Host HCI packet without the H4 type byte. Returns NO_CREDIT
+ * when the host has not returned enough credit; the backend must keep the
+ * packet and retry after the hci_tx_ready callback fires. */
+wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
+    wlh_coproc_t *coproc,
+    uint8_t h4_type,
+    const uint8_t *packet,
+    size_t packet_size
+);
+/* Moves the controller into the ERROR state and emits STATE_CHANGED. */
+wlh_coproc_result_t wlh_coproc_bluetooth_fatal_error(
+    wlh_coproc_t *coproc, uint32_t reason
 );
 void wlh_coproc_get_diagnostics(
     const wlh_coproc_t *coproc, wlh_coproc_diagnostics_t *diagnostics
