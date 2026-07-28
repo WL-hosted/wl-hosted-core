@@ -76,6 +76,16 @@ enum {
     WLH_BLUETOOTH_EVENT_STATE_CHANGED = 0x8001
 };
 
+/* HCI Raw Records on WLH_CHANNEL_BLUETOOTH_HCI use the H4 packet type as
+ * record_type; the record payload excludes the H4 type octet. */
+enum {
+    WLH_H4_TYPE_COMMAND = 0x01,
+    WLH_H4_TYPE_ACL = 0x02,
+    WLH_H4_TYPE_SCO = 0x03,
+    WLH_H4_TYPE_EVENT = 0x04,
+    WLH_H4_TYPE_ISO = 0x05
+};
+
 enum {
     WLH_OTA_METHOD_BEGIN = 0x0001,
     WLH_OTA_METHOD_FINALIZE = 0x0002,

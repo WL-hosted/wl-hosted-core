@@ -28,6 +28,7 @@ extern "C" {
 #define WLH_RPC_FLAGS_MASK UINT8_C(0x03)
 
 typedef enum wlh_wire_result {
+    WLH_WIRE_END = 1,
     WLH_WIRE_OK = 0,
     WLH_WIRE_INVALID_ARGUMENT = -1,
     WLH_WIRE_BUFFER_TOO_SMALL = -2,

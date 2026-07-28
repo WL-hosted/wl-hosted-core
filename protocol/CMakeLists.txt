@@ -10,6 +10,7 @@ option(WLH_BUILD_NANOPB_SMOKE
 )
 
 add_library(wlh_protocol STATIC
+    src/raw_record.c
     src/wire.c
 )
 add_library(wlh::protocol ALIAS wlh_protocol)
@@ -136,6 +137,15 @@ if(BUILD_TESTING)
         target_compile_options(wlh_protocol_tests PRIVATE -Wall -Werror)
     endif()
     add_test(NAME wlh_protocol_wire COMMAND wlh_protocol_tests)
+
+    add_executable(wlh_protocol_raw_record_tests tests/test_raw_record.c)
+    target_link_libraries(wlh_protocol_raw_record_tests PRIVATE wlh_protocol)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(wlh_protocol_raw_record_tests
+            PRIVATE -Wall -Werror)
+    endif()
+    add_test(NAME wlh_protocol_raw_record
+        COMMAND wlh_protocol_raw_record_tests)
 endif()
 
 if(WLH_BUILD_NANOPB_SMOKE)
