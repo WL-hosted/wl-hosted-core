@@ -438,6 +438,7 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
     }
 
     coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] = 0u;
+    coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI_ADV] = 0u;
     if (bluetooth_backend_present(coproc)) {
         response->services_count = 1u;
         response->services[0].service_id = WLH_SERVICE_BLUETOOTH;
@@ -453,6 +454,20 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
         response->initial_credits_count = 5u;
         coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] =
             WLH_COPROC_BLUETOOTH_INITIAL_CREDIT;
+        if (coproc->bluetooth_adv_channel) {
+            response->channels_count = 2u;
+            response->channels[1].channel_id = WLH_CHANNEL_BLUETOOTH_HCI_ADV;
+            response->channels[1].max_frame_payload = WLH_COPROC_MAX_HCI_PACKET;
+            response->channels[1].alignment = 1u;
+            response->initial_credits[5].channel_id =
+                WLH_CHANNEL_BLUETOOTH_HCI_ADV;
+            response->initial_credits[5].units =
+                WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT;
+            response->initial_credits[5].unit_bytes = 1u;
+            response->initial_credits_count = 6u;
+            coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI_ADV] =
+                WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT;
+        }
     }
 
     /* Negotiation frames use session 0. The selected session takes effect only
@@ -784,6 +799,11 @@ static WLH_NOINLINE wlh_coproc_result_t handle_hello_request(
         if (hello->protocol_versions[i].major == 1u)
             supports_v1 = true;
     }
+    coproc->bluetooth_adv_channel = false;
+    for (i = 0; i < hello->channels_count; ++i) {
+        if (hello->channels[i].channel_id == WLH_CHANNEL_BLUETOOTH_HCI_ADV)
+            coproc->bluetooth_adv_channel = true;
+    }
     if (!supports_v1 || hello->max_frame_size < WLH_FRAME_HEADER_SIZE) {
         coproc->config.buffers.free(
             coproc->config.buffers.context, (uint8_t *)hello
@@ -813,6 +833,7 @@ static WLH_NOINLINE wlh_coproc_result_t handle_hello_request(
     memset(&coproc->bluetooth_pending, 0, sizeof(coproc->bluetooth_pending));
     coproc->bluetooth_state = BT_STATE_UNSPECIFIED;
     coproc->bluetooth_tx_inflight = 0u;
+    coproc->bluetooth_adv_tx_inflight = 0u;
     coproc->bluetooth_hci_stopped = false;
     result = send_hello_response(coproc, request->request_id);
     return result;
@@ -2042,8 +2063,12 @@ static void coproc_worker(void *argument) {
                 );
             } else if (job.kind == COPROC_JOB_BLUETOOTH_TX) {
                 coproc_data_job_t *data = job.payload;
-                if (coproc->bluetooth_tx_inflight > 0u)
+                if (data->channel == WLH_CHANNEL_BLUETOOTH_HCI_ADV) {
+                    if (coproc->bluetooth_adv_tx_inflight > 0u)
+                        --coproc->bluetooth_adv_tx_inflight;
+                } else if (coproc->bluetooth_tx_inflight > 0u) {
                     --coproc->bluetooth_tx_inflight;
+                }
                 if (coproc->bluetooth_hci_stopped) {
                     ++coproc->diagnostics.hci_drops;
                 } else {
@@ -2902,12 +2927,18 @@ wlh_coproc_result_t wlh_coproc_bluetooth_info_result(
     return WLH_COPROC_OK;
 }
 
-static void bluetooth_release_tx_reservation(wlh_coproc_t *coproc) {
+static void bluetooth_release_tx_reservation(
+    wlh_coproc_t *coproc, uint8_t channel
+) {
     (void)coproc->config.osal.mutex_lock(
         coproc->config.osal.context, &coproc->state_mutex, WLH_OSAL_WAIT_FOREVER
     );
-    if (coproc->bluetooth_tx_inflight > 0u)
+    if (channel == WLH_CHANNEL_BLUETOOTH_HCI_ADV) {
+        if (coproc->bluetooth_adv_tx_inflight > 0u)
+            --coproc->bluetooth_adv_tx_inflight;
+    } else if (coproc->bluetooth_tx_inflight > 0u) {
         --coproc->bluetooth_tx_inflight;
+    }
     coproc->config.osal.mutex_unlock(
         coproc->config.osal.context, &coproc->state_mutex
     );
@@ -2920,6 +2951,7 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
     size_t packet_size
 ) {
     coproc_data_job_t *job;
+    uint8_t channel = WLH_CHANNEL_BLUETOOTH_HCI;
 
     if (coproc == NULL || packet == NULL || !coproc->worker_started ||
         packet_size > WLH_COPROC_MAX_HCI_PACKET)
@@ -2956,14 +2988,30 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
         );
         return WLH_COPROC_INVALID_STATE;
     }
-    if (coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] <=
-        coproc->bluetooth_tx_inflight) {
-        coproc->config.osal.mutex_unlock(
-            coproc->config.osal.context, &coproc->state_mutex
-        );
-        return WLH_COPROC_NO_CREDIT;
+    if (h4_type == WLH_H4_TYPE_EVENT && coproc->bluetooth_adv_channel &&
+        wlh_hci_event_is_adv_report(packet, packet_size)) {
+        /* Best-effort reports never backpressure the backend: shedding here
+           keeps reliable HCI flowing behind them in the backend queue. */
+        channel = WLH_CHANNEL_BLUETOOTH_HCI_ADV;
+        if (coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI_ADV] <=
+            coproc->bluetooth_adv_tx_inflight) {
+            ++coproc->diagnostics.hci_adv_drops;
+            coproc->config.osal.mutex_unlock(
+                coproc->config.osal.context, &coproc->state_mutex
+            );
+            return WLH_COPROC_OK;
+        }
+        ++coproc->bluetooth_adv_tx_inflight;
+    } else {
+        if (coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] <=
+            coproc->bluetooth_tx_inflight) {
+            coproc->config.osal.mutex_unlock(
+                coproc->config.osal.context, &coproc->state_mutex
+            );
+            return WLH_COPROC_NO_CREDIT;
+        }
+        ++coproc->bluetooth_tx_inflight;
     }
-    ++coproc->bluetooth_tx_inflight;
     coproc->config.osal.mutex_unlock(
         coproc->config.osal.context, &coproc->state_mutex
     );
@@ -2973,11 +3021,11 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
         sizeof(*job) + RAW_HEADER_SIZE + packet_size
     );
     if (job == NULL) {
-        bluetooth_release_tx_reservation(coproc);
+        bluetooth_release_tx_reservation(coproc, channel);
         return WLH_COPROC_BACKEND_ERROR;
     }
     memset(job, 0, sizeof(*job));
-    job->channel = WLH_CHANNEL_BLUETOOTH_HCI;
+    job->channel = channel;
     {
         size_t record_size = 0;
         if (wlh_raw_record_encode(
@@ -2992,7 +3040,7 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
             coproc->config.buffers.free(
                 coproc->config.buffers.context, (uint8_t *)job
             );
-            bluetooth_release_tx_reservation(coproc);
+            bluetooth_release_tx_reservation(coproc, channel);
             return WLH_COPROC_INVALID_ARGUMENT;
         }
         job->size = record_size;
@@ -3002,7 +3050,7 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
         coproc->config.buffers.free(
             coproc->config.buffers.context, (uint8_t *)job
         );
-        bluetooth_release_tx_reservation(coproc);
+        bluetooth_release_tx_reservation(coproc, channel);
         return WLH_COPROC_BACKEND_ERROR;
     }
     return WLH_COPROC_OK;

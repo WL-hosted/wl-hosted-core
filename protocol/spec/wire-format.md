@@ -36,11 +36,14 @@ v1 Header 固定为 24 字节：
 | `0x06` | DIAGNOSTIC_STREAM | coredump/trace 等有界 Raw Record |
 | `0x07` | LOG_STREAM | UTF-8/二进制日志 Record |
 | `0x08` | USER_PASSTHROUGH | User Stream Record |
-| `0x09..0x3f` | Reserved Standard | 禁止私用 |
+| `0x09` | BLUETOOTH_HCI_ADV | 一个或多个 HCI Event Record（best-effort LE 广播/扫描报告） |
+| `0x0a..0x3f` | Reserved Standard | 禁止私用 |
 | `0x40..0x7f` | Experimental | 不承诺兼容 |
 | `0x80..0xff` | Vendor/Private | 必须由 profile 声明 |
 
-Service 到 Channel 的路由是固定的：Link Service 只使用 `0x00`；其他标准 Service 的 Request/Response/Event 均使用 `0x01`。`0x02..0x08` 只承载数据面 Raw Record。这样 Bluetooth/OTA/User 控制不会与各自的大数据流混合，也避免为每个新 Service 消耗 Channel ID。
+Service 到 Channel 的路由是固定的：Link Service 只使用 `0x00`；其他标准 Service 的 Request/Response/Event 均使用 `0x01`。`0x02..0x09` 只承载数据面 Raw Record。这样 Bluetooth/OTA/User 控制不会与各自的大数据流混合，也避免为每个新 Service 消耗 Channel ID。
+
+`0x09 BLUETOOTH_HCI_ADV` 仅承载 Controller→Host 方向的 LE 广播/扫描报告 Event Record（LE Meta 子事件 `0x02/0x0b/0x0d/0x0f`），语义为 best-effort：发送方无 Credit 时就地丢弃报告而不是背压；接收方即使丢弃 payload 也必须归还 Credit。其余 HCI（Command Complete/Status、连接事件、SM、ACL 等）必须走 `0x04 BLUETOOTH_HCI` 可靠通道。该拆分保证可靠 HCI 事件不会在共享流水线中排在广播泛洪之后（控制面 ack 的队头阻塞上界由 `0x09` 的 Credit 窗口限定）。`0x09` 由 Host 在 HelloRequest `channels` 中声明、Coprocessor 在 HelloResponse 中授予 Credit 后启用；未协商时报告退回 `0x04` 旧行为。
 
 ## RPC Envelope
 

@@ -1,6 +1,7 @@
 #ifndef WLH_PROTOCOL_IDS_H
 #define WLH_PROTOCOL_IDS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -15,7 +16,13 @@ enum {
     WLH_CHANNEL_OTA_STREAM = 0x05,
     WLH_CHANNEL_DIAGNOSTIC_STREAM = 0x06,
     WLH_CHANNEL_LOG_STREAM = 0x07,
-    WLH_CHANNEL_USER_PASSTHROUGH = 0x08
+    WLH_CHANNEL_USER_PASSTHROUGH = 0x08,
+    /* Best-effort Controller->Host LE advertising/scan reports. The radio
+     * produces them at a rate no host-side flow control can bound, so they
+     * ride a separate channel with a small credit window: reliable HCI on
+     * WLH_CHANNEL_BLUETOOTH_HCI is never queued behind a report flood, and
+     * a sender without credit sheds reports instead of backpressuring. */
+    WLH_CHANNEL_BLUETOOTH_HCI_ADV = 0x09
 };
 
 enum {
@@ -85,6 +92,30 @@ enum {
     WLH_H4_TYPE_EVENT = 0x04,
     WLH_H4_TYPE_ISO = 0x05
 };
+
+enum {
+    WLH_HCI_EVENT_LE_META = 0x3e,
+    WLH_HCI_LE_SUBEVENT_ADV_REPORT = 0x02,
+    WLH_HCI_LE_SUBEVENT_DIRECT_ADV_REPORT = 0x0b,
+    WLH_HCI_LE_SUBEVENT_EXT_ADV_REPORT = 0x0d,
+    WLH_HCI_LE_SUBEVENT_PERIODIC_ADV_REPORT = 0x0f
+};
+
+/* True for LE advertising/scan report events, the best-effort class carried
+ * on WLH_CHANNEL_BLUETOOTH_HCI_ADV. `event` starts at the HCI event code
+ * (no H4 type octet), matching the HCI Raw Record payload layout. Both link
+ * ends must share this classification so a report is never misfiled onto
+ * the reliable channel by one side and dropped as best-effort by the other. */
+static inline int wlh_hci_event_is_adv_report(
+    const uint8_t *event, size_t size
+) {
+    if (event == NULL || size < 3u || event[0] != WLH_HCI_EVENT_LE_META)
+        return 0;
+    return event[2] == WLH_HCI_LE_SUBEVENT_ADV_REPORT ||
+           event[2] == WLH_HCI_LE_SUBEVENT_DIRECT_ADV_REPORT ||
+           event[2] == WLH_HCI_LE_SUBEVENT_EXT_ADV_REPORT ||
+           event[2] == WLH_HCI_LE_SUBEVENT_PERIODIC_ADV_REPORT;
+}
 
 enum {
     WLH_OTA_METHOD_BEGIN = 0x0001,

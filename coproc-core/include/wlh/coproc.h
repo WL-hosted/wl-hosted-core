@@ -17,6 +17,12 @@ extern "C" {
 #define WLH_COPROC_MAX_QUEUE_DEPTH 32u
 #define WLH_COPROC_MAX_HCI_PACKET 1024u
 #define WLH_COPROC_BLUETOOTH_INITIAL_CREDIT 16u
+/* Window for best-effort LE advertising reports on
+ * WLH_CHANNEL_BLUETOOTH_HCI_ADV. Deliberately small: it bounds how many
+ * reports can sit ahead of a reliable HCI event anywhere in the shared
+ * transport pipeline, so control-plane acks are never head-of-line blocked
+ * behind a report flood. Reports beyond the window are shed at the source. */
+#define WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT 4u
 
 /* Reason codes carried by BluetoothStateChangedEvent when the core itself
  * enters the ERROR state. Adapters may pass their own codes to
@@ -325,6 +331,9 @@ typedef struct wlh_coproc_diagnostics {
     uint32_t peer_resets;
     uint32_t hci_malformed;
     uint32_t hci_drops;
+    /* Best-effort LE advertising reports shed for lack of ADV-channel
+     * credit. Growth under scan flood is expected, not a fault. */
+    uint32_t hci_adv_drops;
     uint32_t bluetooth_mismatches;
     uint64_t last_peer_activity_ms;
 } wlh_coproc_diagnostics_t;
@@ -385,6 +394,11 @@ typedef struct wlh_coproc {
     uint32_t bluetooth_state;
     /* Controller->Host HCI jobs queued but not yet sent; reserves credit. */
     uint32_t bluetooth_tx_inflight;
+    /* Same reservation for WLH_CHANNEL_BLUETOOTH_HCI_ADV. */
+    uint32_t bluetooth_adv_tx_inflight;
+    /* Host declared WLH_CHANNEL_BLUETOOTH_HCI_ADV in its Hello; reports fall
+     * back to the reliable channel when the peer predates the split. */
+    bool bluetooth_adv_channel;
     bool bluetooth_hci_stopped;
 } wlh_coproc_t;
 

@@ -800,8 +800,9 @@ static void establish_ready_bluetooth(fixture_t *fixture) {
     send_bluetooth_hello(fixture, 42u);
 }
 
-static size_t make_hci_frame(
+static size_t make_hci_channel_frame(
     uint8_t *output,
+    uint8_t channel,
     uint32_t session_id,
     uint32_t sequence,
     uint8_t record_type,
@@ -823,7 +824,7 @@ static size_t make_hci_frame(
             payload_size
         ) == WLH_WIRE_OK
     );
-    wlh_frame_header_init(&header, WLH_CHANNEL_BLUETOOTH_HCI);
+    wlh_frame_header_init(&header, channel);
     header.session_id = session_id;
     header.sequence = sequence;
     assert(
@@ -832,6 +833,25 @@ static size_t make_hci_frame(
         ) == WLH_WIRE_OK
     );
     return frame_size;
+}
+
+static size_t make_hci_frame(
+    uint8_t *output,
+    uint32_t session_id,
+    uint32_t sequence,
+    uint8_t record_type,
+    const uint8_t *payload,
+    size_t payload_size
+) {
+    return make_hci_channel_frame(
+        output,
+        WLH_CHANNEL_BLUETOOTH_HCI,
+        session_id,
+        sequence,
+        record_type,
+        payload,
+        payload_size
+    );
 }
 
 /* Decode the single raw record inside the HCI frame the host last sent. */
@@ -2556,18 +2576,61 @@ static void test_bluetooth_hci_channel(void) {
         );
     }
 
-    /* When the adapter rejects a packet the credit is withheld so the peer
-       stays backpressured instead of losing HCI data. */
+    /* When the adapter rejects a packet the drop is counted but the credit is
+       still returned: withholding it would permanently shrink the channel
+       window because nothing re-runs Hello after a local drop. */
     tx_before = fixture.tx_count;
     fixture.hci_rx_return = WLH_HOST_PENDING_FULL;
     frame_size = make_hci_frame(
         frame, 42u, 1u, WLH_H4_TYPE_EVENT, event_packet, sizeof(event_packet)
     );
     assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
-    wait_milliseconds(20u);
+    wait_for_tx(&fixture, tx_before + 1u);
     assert(fixture.hci_rx_count == 1u);
-    assert(fixture.tx_count == tx_before);
     fixture.hci_rx_return = WLH_HOST_OK;
+    {
+        wlh_frame_header_t header;
+        wlh_rpc_envelope_t rpc;
+        wlh_protocol_v1_CreditUpdate update =
+            wlh_protocol_v1_CreditUpdate_init_zero;
+        const uint8_t *tx_payload;
+        const uint8_t *rpc_payload;
+        size_t tx_payload_size = 0u;
+        size_t rpc_payload_size = 0u;
+        pb_istream_t stream;
+        assert(
+            wlh_frame_decode(
+                &header,
+                &tx_payload,
+                &tx_payload_size,
+                fixture.tx,
+                fixture.tx_size,
+                sizeof(fixture.tx)
+            ) == WLH_WIRE_OK
+        );
+        assert(header.channel == WLH_CHANNEL_LINK_CONTROL);
+        assert(
+            wlh_rpc_decode(
+                &rpc,
+                &rpc_payload,
+                &rpc_payload_size,
+                tx_payload,
+                tx_payload_size,
+                sizeof(fixture.tx)
+            ) == WLH_WIRE_OK
+        );
+        assert(
+            rpc.service_id == WLH_SERVICE_LINK &&
+            rpc.method_id == WLH_LINK_METHOD_CREDIT_UPDATE
+        );
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        assert(
+            pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &update)
+        );
+        assert(
+            update.channel_id == WLH_CHANNEL_BLUETOOTH_HCI && update.units == 1u
+        );
+    }
     {
         wlh_host_diagnostics_t diagnostics;
         wlh_host_get_diagnostics(&fixture.host, &diagnostics);
@@ -2656,6 +2719,207 @@ static void test_bluetooth_hci_channel(void) {
     assert(wlh_host_stop(&fixture.host) == WLH_HOST_OK);
 }
 
+static void assert_last_tx_credit_update(
+    const fixture_t *fixture, uint8_t channel
+) {
+    wlh_frame_header_t header;
+    wlh_rpc_envelope_t rpc;
+    wlh_protocol_v1_CreditUpdate update =
+        wlh_protocol_v1_CreditUpdate_init_zero;
+    const uint8_t *tx_payload;
+    const uint8_t *rpc_payload;
+    size_t tx_payload_size = 0u;
+    size_t rpc_payload_size = 0u;
+    pb_istream_t stream;
+    assert(
+        wlh_frame_decode(
+            &header,
+            &tx_payload,
+            &tx_payload_size,
+            fixture->tx,
+            fixture->tx_size,
+            sizeof(fixture->tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(header.channel == WLH_CHANNEL_LINK_CONTROL);
+    assert(
+        wlh_rpc_decode(
+            &rpc,
+            &rpc_payload,
+            &rpc_payload_size,
+            tx_payload,
+            tx_payload_size,
+            sizeof(fixture->tx)
+        ) == WLH_WIRE_OK
+    );
+    assert(
+        rpc.service_id == WLH_SERVICE_LINK &&
+        rpc.method_id == WLH_LINK_METHOD_CREDIT_UPDATE
+    );
+    stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+    assert(pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &update));
+    assert(update.channel_id == channel && update.units == 1u);
+}
+
+static void test_bluetooth_adv_channel(void) {
+    fixture_t fixture;
+    uint8_t frame[4096];
+    size_t frame_size;
+    unsigned tx_before;
+    unsigned attempt;
+    /* LE Meta advertising report (subevent 0x02). */
+    static const uint8_t adv_report[] = {
+        0x3eu,
+        0x0cu,
+        0x02u,
+        0x01u,
+        0x00u,
+        0x00u,
+        0x01u,
+        0x02u,
+        0x03u,
+        0x04u,
+        0x05u,
+        0x06u,
+        0x00u,
+        0xd0u
+    };
+    static const uint8_t acl_packet[] = {
+        0x01u, 0x00u, 0x02u, 0x00u, 0xaau, 0xbbu
+    };
+    fixture_init(&fixture);
+    assert(wlh_host_start(&fixture.host) == WLH_HOST_OK);
+    wait_for_state(&fixture, WLH_HOST_STATE_NEGOTIATING);
+    wait_for_tx(&fixture, 1u);
+
+    /* The HelloRequest declares the best-effort ADV channel capability. */
+    {
+        wlh_frame_header_t header;
+        wlh_rpc_envelope_t rpc;
+        wlh_protocol_v1_HelloRequest hello =
+            wlh_protocol_v1_HelloRequest_init_zero;
+        const uint8_t *tx_payload;
+        const uint8_t *rpc_payload;
+        size_t tx_payload_size = 0u;
+        size_t rpc_payload_size = 0u;
+        size_t index;
+        bool adv_declared = false;
+        pb_istream_t stream;
+        assert(
+            wlh_frame_decode(
+                &header,
+                &tx_payload,
+                &tx_payload_size,
+                fixture.tx,
+                fixture.tx_size,
+                sizeof(fixture.tx)
+            ) == WLH_WIRE_OK
+        );
+        assert(
+            wlh_rpc_decode(
+                &rpc,
+                &rpc_payload,
+                &rpc_payload_size,
+                tx_payload,
+                tx_payload_size,
+                sizeof(fixture.tx)
+            ) == WLH_WIRE_OK
+        );
+        assert(
+            rpc.service_id == WLH_SERVICE_LINK &&
+            rpc.method_id == WLH_LINK_METHOD_HELLO
+        );
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        assert(pb_decode(&stream, wlh_protocol_v1_HelloRequest_fields, &hello));
+        for (index = 0; index < hello.channels_count; ++index) {
+            if (hello.channels[index].channel_id ==
+                WLH_CHANNEL_BLUETOOTH_HCI_ADV)
+                adv_declared = true;
+        }
+        assert(adv_declared);
+    }
+    send_bluetooth_hello(&fixture, 42u);
+
+    /* A valid advertising report on the ADV channel reaches the adapter and
+       the credit comes back on the same channel. */
+    tx_before = fixture.tx_count;
+    frame_size = make_hci_channel_frame(
+        frame,
+        WLH_CHANNEL_BLUETOOTH_HCI_ADV,
+        42u,
+        0u,
+        WLH_H4_TYPE_EVENT,
+        adv_report,
+        sizeof(adv_report)
+    );
+    assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
+    wait_for_tx(&fixture, tx_before + 1u);
+    assert(fixture.hci_rx_count == 1u);
+    assert(fixture.hci_rx_type == WLH_H4_TYPE_EVENT);
+    assert(
+        fixture.hci_rx_size == sizeof(adv_report) &&
+        memcmp(fixture.hci_rx_payload, adv_report, sizeof(adv_report)) == 0
+    );
+    assert_last_tx_credit_update(&fixture, WLH_CHANNEL_BLUETOOTH_HCI_ADV);
+
+    /* Adapter rejection still returns the ADV credit; only diagnostics
+       record the drop. */
+    tx_before = fixture.tx_count;
+    fixture.hci_rx_return = WLH_HOST_PENDING_FULL;
+    frame_size = make_hci_channel_frame(
+        frame,
+        WLH_CHANNEL_BLUETOOTH_HCI_ADV,
+        42u,
+        1u,
+        WLH_H4_TYPE_EVENT,
+        adv_report,
+        sizeof(adv_report)
+    );
+    assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
+    wait_for_tx(&fixture, tx_before + 1u);
+    fixture.hci_rx_return = WLH_HOST_OK;
+    assert_last_tx_credit_update(&fixture, WLH_CHANNEL_BLUETOOTH_HCI_ADV);
+    {
+        wlh_host_diagnostics_t diagnostics;
+        wlh_host_get_diagnostics(&fixture.host, &diagnostics);
+        assert(diagnostics.hci_drops == 1u && diagnostics.hci_malformed == 0u);
+    }
+
+    /* ACL records are reliable traffic and must not ride the best-effort
+       channel: treat them as malformed HCI. */
+    {
+        unsigned events_before = fixture.events;
+        const wlh_host_bluetooth_state_event_t *decoded;
+        frame_size = make_hci_channel_frame(
+            frame,
+            WLH_CHANNEL_BLUETOOTH_HCI_ADV,
+            42u,
+            2u,
+            WLH_H4_TYPE_ACL,
+            acl_packet,
+            sizeof(acl_packet)
+        );
+        assert(
+            wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK
+        );
+        for (attempt = 0; attempt < 1000u && fixture.events == events_before;
+             ++attempt)
+            wait_milliseconds(1u);
+        assert(fixture.events == events_before + 1u);
+        assert(
+            fixture.last_event_kind == WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED
+        );
+        decoded = (const wlh_host_bluetooth_state_event_t *)
+                      fixture.last_event_payload;
+        assert(
+            decoded->state == WLH_BLUETOOTH_STATE_ERROR &&
+            decoded->reason == WLH_HOST_BLUETOOTH_REASON_MALFORMED_HCI
+        );
+        assert(fixture.hci_rx_count == 1u);
+    }
+    assert(wlh_host_stop(&fixture.host) == WLH_HOST_OK);
+}
+
 int main(void) {
     test_handshake_and_rpc();
     test_timeout_credit_and_session();
@@ -2668,6 +2932,7 @@ int main(void) {
     test_bluetooth_not_negotiated();
     test_bluetooth_lifecycle_and_info();
     test_bluetooth_hci_channel();
+    test_bluetooth_adv_channel();
     puts("host core tests passed");
     return 0;
 }

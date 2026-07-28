@@ -172,10 +172,13 @@ typedef void (*wlh_rpc_completion_fn)(
 /*
  * Controller->Host HCI delivery. payload excludes the H4 type octet and is
  * only valid for the duration of the call, so the callback must copy or take
- * ownership before returning. Return WLH_HOST_OK to have the Core return one
- * channel credit to the coprocessor; any other value (e.g. a full queue)
- * withholds the credit so backpressure forms naturally. Runs on the Core task
- * with internal locks held: never block and never call back into the Core.
+ * ownership before returning. The Core returns the channel credit to the
+ * coprocessor regardless of the return value; returning anything other than
+ * WLH_HOST_OK records the packet as dropped in diagnostics (hci_drops).
+ * Reliable delivery is therefore the adapter's responsibility: keep a bounded
+ * queue with room reserved for control events instead of relying on link
+ * backpressure. Runs on the Core task with internal locks held: never block
+ * and never call back into the Core.
  */
 typedef wlh_host_result_t (*wlh_host_bluetooth_hci_rx_fn)(
     void *context, uint8_t h4_type, const uint8_t *payload, size_t payload_size

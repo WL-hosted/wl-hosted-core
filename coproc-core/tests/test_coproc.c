@@ -774,7 +774,9 @@ static void wait_for_hci_drops(wlh_coproc_t *core, uint32_t value) {
     CHECK(false);
 }
 
-static void prepare_ready_bt_core(fixture_t *f, wlh_coproc_t *core) {
+static void prepare_ready_bt_core(
+    fixture_t *f, wlh_coproc_t *core, bool declare_adv
+) {
     wlh_coproc_config_t config;
     uint8_t incoming[4096];
     size_t incoming_size;
@@ -808,6 +810,13 @@ static void prepare_ready_bt_core(fixture_t *f, wlh_coproc_t *core) {
     hello.protocol_versions_count = 1;
     hello.protocol_versions[0].major = 1;
     hello.max_frame_size = 4096;
+    if (declare_adv) {
+        hello.channels_count = 2u;
+        hello.channels[0].channel_id = WLH_CHANNEL_BLUETOOTH_HCI;
+        hello.channels[0].max_frame_payload = 4096u;
+        hello.channels[1].channel_id = WLH_CHANNEL_BLUETOOTH_HCI_ADV;
+        hello.channels[1].max_frame_payload = 4096u;
+    }
     incoming_size = make_rpc_frame(
         incoming,
         0,
@@ -1978,8 +1987,12 @@ static void hci_host_frame(
     CHECK(wlh_coproc_on_frame(core, incoming, size) == WLH_COPROC_OK);
 }
 
-static void check_sent_hci_record(
-    fixture_t *f, uint8_t h4_type, const uint8_t *expected, size_t expected_size
+static void check_sent_hci_record_on(
+    fixture_t *f,
+    uint8_t channel,
+    uint8_t h4_type,
+    const uint8_t *expected,
+    size_t expected_size
 ) {
     wlh_frame_header_t header;
     const uint8_t *payload;
@@ -1990,7 +2003,7 @@ static void check_sent_hci_record(
             &header, &payload, &payload_size, f->sent, f->sent_size, 4096
         ) == WLH_WIRE_OK
     );
-    CHECK(header.channel == WLH_CHANNEL_BLUETOOTH_HCI);
+    CHECK(header.channel == channel);
     CHECK(payload_size == expected_size + 8u);
     if (payload_size != expected_size + 8u)
         return;
@@ -2002,6 +2015,14 @@ static void check_sent_hci_record(
         (uint32_t)expected_size
     );
     CHECK(memcmp(payload + 8u, expected, expected_size) == 0);
+}
+
+static void check_sent_hci_record(
+    fixture_t *f, uint8_t h4_type, const uint8_t *expected, size_t expected_size
+) {
+    check_sent_hci_record_on(
+        f, WLH_CHANNEL_BLUETOOTH_HCI, h4_type, expected, expected_size
+    );
 }
 
 static void test_bluetooth_lifecycle_and_info(void) {
@@ -2023,7 +2044,7 @@ static void test_bluetooth_lifecycle_and_info(void) {
     memset(&f, 0, sizeof(f));
     f.core = &core;
     wlh_posix_osal_init(&f.posix);
-    prepare_ready_bt_core(&f, &core);
+    prepare_ready_bt_core(&f, &core, false);
 
     /* Hello advertises the Bluetooth service, HCI channel and credits. */
     {
@@ -2359,7 +2380,7 @@ static void test_bluetooth_hci(void) {
     memset(&f, 0, sizeof(f));
     f.core = &core;
     wlh_posix_osal_init(&f.posix);
-    prepare_ready_bt_core(&f, &core);
+    prepare_ready_bt_core(&f, &core, false);
 
     /* A Host->Controller command reaches the backend and returns the
        credit. */
@@ -2455,10 +2476,41 @@ static void test_bluetooth_hci(void) {
         &f, WLH_H4_TYPE_EVENT, event_packet, sizeof(event_packet)
     );
 
+    /* Without ADV negotiation advertising reports fall back to the reliable
+       HCI channel. */
+    {
+        static const uint8_t adv_report[14] = {
+            0x3e,
+            0x0c,
+            0x02,
+            0x01,
+            0x00,
+            0x00,
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+            0x05,
+            0x06,
+            0x00,
+            0xd0
+        };
+        sent_before = f.sent_count;
+        CHECK(
+            wlh_coproc_bluetooth_hci_send(
+                &core, WLH_H4_TYPE_EVENT, adv_report, sizeof(adv_report)
+            ) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        check_sent_hci_record(
+            &f, WLH_H4_TYPE_EVENT, adv_report, sizeof(adv_report)
+        );
+    }
+
     /* Draining the advertised credit yields NO_CREDIT without dropping. */
     {
         unsigned i;
-        for (i = 1u; i < WLH_COPROC_BLUETOOTH_INITIAL_CREDIT; ++i) {
+        for (i = 2u; i < WLH_COPROC_BLUETOOTH_INITIAL_CREDIT; ++i) {
             sent_before = f.sent_count;
             CHECK(
                 wlh_coproc_bluetooth_hci_send(
@@ -2667,6 +2719,172 @@ static void test_bluetooth_hci(void) {
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }
 
+static void test_bluetooth_adv_channel(void) {
+    fixture_t f;
+    wlh_coproc_t core;
+    wlh_rpc_envelope_t rpc;
+    const uint8_t *rpc_payload;
+    size_t rpc_payload_size;
+    pb_istream_t stream;
+    unsigned sent_before;
+    unsigned i;
+    static const uint8_t event_packet[5] = {0x0e, 0x03, 0x01, 0x03, 0x0c};
+    static const uint8_t adv_report[14] = {
+        0x3e,
+        0x0c,
+        0x02,
+        0x01,
+        0x00,
+        0x00,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06,
+        0x00,
+        0xd0
+    };
+
+    memset(&f, 0, sizeof(f));
+    f.core = &core;
+    wlh_posix_osal_init(&f.posix);
+    prepare_ready_bt_core(&f, &core, true);
+
+    /* Hello grants a dedicated best-effort credit pool for the ADV
+       channel. */
+    {
+        wlh_protocol_v1_HelloResponse response =
+            wlh_protocol_v1_HelloResponse_init_zero;
+        decode_last_sent(&f, &rpc, &rpc_payload, &rpc_payload_size);
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        CHECK(
+            pb_decode(&stream, wlh_protocol_v1_HelloResponse_fields, &response)
+        );
+        CHECK(response.initial_credits_count == 6u);
+        CHECK(
+            response.initial_credits[5].channel_id ==
+                WLH_CHANNEL_BLUETOOTH_HCI_ADV &&
+            response.initial_credits[5].units ==
+                WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT &&
+            response.initial_credits[5].unit_bytes == 1u
+        );
+        CHECK(
+            response.channels_count == 2u &&
+            response.channels[1].channel_id == WLH_CHANNEL_BLUETOOTH_HCI_ADV &&
+            response.channels[1].max_frame_payload == WLH_COPROC_MAX_HCI_PACKET
+        );
+    }
+
+    /* Advertising reports ride the ADV channel; other events stay on the
+       reliable channel. */
+    sent_before = f.sent_count;
+    CHECK(
+        wlh_coproc_bluetooth_hci_send(
+            &core, WLH_H4_TYPE_EVENT, adv_report, sizeof(adv_report)
+        ) == WLH_COPROC_OK
+    );
+    wait_for_sent(&f, sent_before + 1u);
+    check_sent_hci_record_on(
+        &f,
+        WLH_CHANNEL_BLUETOOTH_HCI_ADV,
+        WLH_H4_TYPE_EVENT,
+        adv_report,
+        sizeof(adv_report)
+    );
+
+    sent_before = f.sent_count;
+    CHECK(
+        wlh_coproc_bluetooth_hci_send(
+            &core, WLH_H4_TYPE_EVENT, event_packet, sizeof(event_packet)
+        ) == WLH_COPROC_OK
+    );
+    wait_for_sent(&f, sent_before + 1u);
+    check_sent_hci_record(
+        &f, WLH_H4_TYPE_EVENT, event_packet, sizeof(event_packet)
+    );
+
+    /* Exhausting the ADV window sheds reports at the source: the call still
+       succeeds, nothing is queued, and the backend is never backpressured. */
+    for (i = 1u; i < WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT; ++i) {
+        sent_before = f.sent_count;
+        CHECK(
+            wlh_coproc_bluetooth_hci_send(
+                &core, WLH_H4_TYPE_EVENT, adv_report, sizeof(adv_report)
+            ) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+    }
+    sent_before = f.sent_count;
+    CHECK(
+        wlh_coproc_bluetooth_hci_send(
+            &core, WLH_H4_TYPE_EVENT, adv_report, sizeof(adv_report)
+        ) == WLH_COPROC_OK
+    );
+    {
+        wlh_coproc_diagnostics_t diagnostics;
+        wlh_coproc_get_diagnostics(&core, &diagnostics);
+        CHECK(diagnostics.hci_adv_drops == 1u);
+    }
+    CHECK(f.sent_count == sent_before);
+    CHECK(f.bt_tx_ready_calls == 0u);
+
+    /* Reliable events keep flowing while the ADV window is exhausted. */
+    sent_before = f.sent_count;
+    CHECK(
+        wlh_coproc_bluetooth_hci_send(
+            &core, WLH_H4_TYPE_EVENT, event_packet, sizeof(event_packet)
+        ) == WLH_COPROC_OK
+    );
+    wait_for_sent(&f, sent_before + 1u);
+    check_sent_hci_record(
+        &f, WLH_H4_TYPE_EVENT, event_packet, sizeof(event_packet)
+    );
+
+    /* An ADV credit update reopens the window without a tx-ready edge. */
+    {
+        wlh_protocol_v1_CreditUpdate update =
+            wlh_protocol_v1_CreditUpdate_init_zero;
+        uint8_t incoming[4096];
+        size_t incoming_size;
+        update.channel_id = WLH_CHANNEL_BLUETOOTH_HCI_ADV;
+        update.units = 1u;
+        sent_before = f.sent_count;
+        incoming_size = make_rpc_frame(
+            incoming,
+            42,
+            0,
+            WLH_SERVICE_LINK,
+            WLH_LINK_METHOD_CREDIT_UPDATE,
+            500,
+            wlh_protocol_v1_CreditUpdate_fields,
+            &update
+        );
+        CHECK(
+            wlh_coproc_on_frame(&core, incoming, incoming_size) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        CHECK(f.bt_tx_ready_calls == 0u);
+
+        sent_before = f.sent_count;
+        CHECK(
+            wlh_coproc_bluetooth_hci_send(
+                &core, WLH_H4_TYPE_EVENT, adv_report, sizeof(adv_report)
+            ) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        check_sent_hci_record_on(
+            &f,
+            WLH_CHANNEL_BLUETOOTH_HCI_ADV,
+            WLH_H4_TYPE_EVENT,
+            adv_report,
+            sizeof(adv_report)
+        );
+    }
+
+    CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
+}
+
 int main(void) {
     test_hello_wifi_and_ethernet();
     test_device_info_and_user_passthrough();
@@ -2677,6 +2895,7 @@ int main(void) {
     test_large_message_allocation_failures();
     test_bluetooth_lifecycle_and_info();
     test_bluetooth_hci();
+    test_bluetooth_adv_channel();
     if (failures != 0)
         return 1;
     puts("coprocessor core tests passed");

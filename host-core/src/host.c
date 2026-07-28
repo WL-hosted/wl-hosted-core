@@ -488,7 +488,7 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
         WLH_SERVICE_BLUETOOTH, 1u, 0u, 0u,
     };
 
-    hello->channels_count = 5u;
+    hello->channels_count = 6u;
     hello->channels[0] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_LINK_CONTROL, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
@@ -507,6 +507,10 @@ static wlh_host_result_t send_hello(wlh_host_t *host) {
 
     hello->channels[4] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_BLUETOOTH_HCI, WLH_HOST_MAX_HCI_PACKET, 0u, 1u, 0u,
+    };
+
+    hello->channels[5] = (wlh_protocol_v1_ChannelCapability){
+        WLH_CHANNEL_BLUETOOTH_HCI_ADV, WLH_HOST_MAX_HCI_PACKET, 0u, 1u, 0u,
     };
     // clang-format on
     memset(&envelope, 0, sizeof(envelope));
@@ -1109,12 +1113,15 @@ static uint32_t host_next_wait_ms(const wlh_host_t *host) {
 }
 
 static bool hci_rx_record_valid(
-    const wlh_host_t *host, const wlh_raw_record_view_t *record
+    const wlh_host_t *host, uint8_t channel, const wlh_raw_record_view_t *record
 ) {
     if (record->payload_size > host->bluetooth_max_record)
         return false;
     switch (record->record_type) {
     case WLH_H4_TYPE_ACL:
+        /* The best-effort ADV channel only carries advertising events. */
+        if (channel == WLH_CHANNEL_BLUETOOTH_HCI_ADV)
+            return false;
         return record->payload_size >= 4u &&
                (size_t)((uint16_t)record->payload[2] |
                         ((uint16_t)record->payload[3] << 8)) +
@@ -1153,7 +1160,10 @@ static void bluetooth_fault(wlh_host_t *host, uint32_t reason) {
 }
 
 static WLH_NOINLINE wlh_host_result_t process_hci_frame(
-    wlh_host_t *host, const uint8_t *payload, size_t payload_size
+    wlh_host_t *host,
+    uint8_t channel,
+    const uint8_t *payload,
+    size_t payload_size
 ) {
     wlh_raw_record_iterator_t iterator;
     wlh_raw_record_view_t record;
@@ -1172,7 +1182,7 @@ static WLH_NOINLINE wlh_host_result_t process_hci_frame(
         while ((record_result =
                     wlh_raw_record_iterator_next(&iterator, &record)) ==
                WLH_WIRE_OK) {
-            if (!hci_rx_record_valid(host, &record)) {
+            if (!hci_rx_record_valid(host, channel, &record)) {
                 record_result = WLH_WIRE_INVALID_ARGUMENT;
                 break;
             }
@@ -1196,13 +1206,21 @@ static WLH_NOINLINE wlh_host_result_t process_hci_frame(
             break;
         }
     }
-    /* Withhold the credit when the adapter rejects a packet: HCI must not
-       silently drop, so the peer stays backpressured until recovery. */
+    /* Return the credit even when the adapter rejects a packet. Withholding
+       it would permanently shrink the channel window: nothing re-runs Hello
+       after a local drop, so every withheld credit turns a transient overload
+       into a smaller pipe until HCI stalls entirely. Reliable delivery is the
+       adapter's job (bounded queue with reserved control-event slots); the
+       link layer only guarantees the window stays intact. */
     if (!delivered)
-        return WLH_HOST_PENDING_FULL;
-    if (send_credit_update(host, WLH_CHANNEL_BLUETOOTH_HCI) != WLH_HOST_OK)
+        WLH_LOGW(
+            "wlh_host",
+            "HCI rx dropped by adapter on channel %u",
+            (unsigned)channel
+        );
+    if (send_credit_update(host, channel) != WLH_HOST_OK)
         WLH_LOGW("wlh_host", "HCI credit update failed");
-    return WLH_HOST_OK;
+    return delivered ? WLH_HOST_OK : WLH_HOST_PENDING_FULL;
 }
 
 static WLH_NOINLINE wlh_host_result_t
@@ -1266,8 +1284,11 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
     host->diagnostics.last_peer_activity_ms = now_ms(host);
 
     // Dispatch by channel.
-    if (header.channel == WLH_CHANNEL_BLUETOOTH_HCI)
-        return process_hci_frame(host, frame_payload, frame_payload_size);
+    if (header.channel == WLH_CHANNEL_BLUETOOTH_HCI ||
+        header.channel == WLH_CHANNEL_BLUETOOTH_HCI_ADV)
+        return process_hci_frame(
+            host, header.channel, frame_payload, frame_payload_size
+        );
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
         header.channel == WLH_CHANNEL_ETHERNET_AP) {
         bool dispatch_failed = false;
