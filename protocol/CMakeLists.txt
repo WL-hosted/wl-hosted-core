@@ -49,10 +49,11 @@ set_target_properties(wlh_nanopb_runtime PROPERTIES
 find_program(WLH_PROTOC_EXECUTABLE NAMES protoc)
 find_program(WLH_NANOPB_PLUGIN_EXECUTABLE NAMES protoc-gen-nanopb)
 
+set(WLH_STANDARD_PROTO_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/standard")
+set(WLH_SIM_PROTO_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/sim")
+
 if(WLH_PROTOC_EXECUTABLE AND WLH_NANOPB_PLUGIN_EXECUTABLE)
     file(GLOB WLH_STANDARD_PROTO_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/proto/*.proto")
-    set(WLH_STANDARD_PROTO_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/standard")
-    set(WLH_SIM_PROTO_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/sim")
 
     set(WLH_STANDARD_PROTO_SOURCES)
     set(WLH_STANDARD_PROTO_HEADERS)
@@ -82,16 +83,9 @@ if(WLH_PROTOC_EXECUTABLE AND WLH_NANOPB_PLUGIN_EXECUTABLE)
     add_library(wlh_protocol_nanopb STATIC EXCLUDE_FROM_ALL
         ${WLH_STANDARD_PROTO_SOURCES}
     )
-    add_library(wlh::protocol_nanopb ALIAS wlh_protocol_nanopb)
     target_include_directories(wlh_protocol_nanopb
         PUBLIC
             $<BUILD_INTERFACE:${WLH_STANDARD_PROTO_OUTPUT_DIR}>
-    )
-    target_link_libraries(wlh_protocol_nanopb PUBLIC wlh_nanopb_runtime)
-    target_compile_features(wlh_protocol_nanopb PUBLIC c_std_99)
-    set_target_properties(wlh_protocol_nanopb PROPERTIES
-        C_EXTENSIONS OFF
-        POSITION_INDEPENDENT_CODE ON
     )
 
     set(WLH_SIM_PROTO_SOURCE "${WLH_SIM_PROTO_OUTPUT_DIR}/sim_sideband.pb.c")
@@ -127,8 +121,34 @@ if(WLH_PROTOC_EXECUTABLE AND WLH_NANOPB_PLUGIN_EXECUTABLE)
         POSITION_INDEPENDENT_CODE ON
     )
 else()
-    message(STATUS "protoc and protoc-gen-nanopb were not both found; nanopb generation targets are unavailable")
+    message(STATUS "protoc and/or protoc-gen-nanopb not found; using pre-generated standard nanopb sources")
+
+    file(GLOB WLH_STANDARD_PROTO_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated/*.pb.c")
+    set(WLH_STANDARD_PROTO_HEADERS)
+    foreach(WLH_PROTO_SOURCE IN LISTS WLH_STANDARD_PROTO_SOURCES)
+        get_filename_component(WLH_PROTO_NAME "${WLH_PROTO_SOURCE}" NAME_WE)
+        list(APPEND WLH_STANDARD_PROTO_HEADERS
+            "${CMAKE_CURRENT_SOURCE_DIR}/generated/${WLH_PROTO_NAME}.pb.h")
+    endforeach()
+
+    add_library(wlh_protocol_nanopb STATIC EXCLUDE_FROM_ALL
+        ${WLH_STANDARD_PROTO_SOURCES}
+        ${WLH_STANDARD_PROTO_HEADERS}
+    )
+    target_include_directories(wlh_protocol_nanopb
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/generated>
+    )
 endif()
+
+add_library(wlh::protocol_nanopb ALIAS wlh_protocol_nanopb)
+target_link_libraries(wlh_protocol_nanopb PUBLIC wlh_nanopb_runtime)
+target_compile_features(wlh_protocol_nanopb PUBLIC c_std_99)
+set_target_properties(wlh_protocol_nanopb PROPERTIES
+    C_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON
+)
 
 if(BUILD_TESTING)
     add_executable(wlh_protocol_tests tests/test_wire.c)
