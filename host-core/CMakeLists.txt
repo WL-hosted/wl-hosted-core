@@ -15,7 +15,21 @@ if(NOT TARGET wlh_osal)
 endif()
 set(BUILD_TESTING ${WLH_HOST_BUILD_TESTING})
 
-add_library(wlh_host_core STATIC src/host.c)
+add_library(wlh_host_core STATIC
+    src/host.c
+    src/host_adc.c
+    src/host_bluetooth.c
+    src/host_device_info.c
+    src/host_ethernet.c
+    src/host_frame.c
+    src/host_io.c
+    src/host_kv.c
+    src/host_link.c
+    src/host_rpc.c
+    src/host_user_passthrough.c
+    src/host_wire.c
+    src/host_wifi.c
+)
 add_library(wlh::host_core ALIAS wlh_host_core)
 target_include_directories(wlh_host_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -37,7 +51,17 @@ endif()
 
 if(WLH_HOST_BUILD_TESTING)
     find_package(Threads REQUIRED)
-    add_executable(wlh_host_core_tests tests/test_host.c)
+    add_executable(wlh_host_core_tests
+        tests/host_test_support.c
+        tests/test_host.c
+        tests/test_host_allocation.c
+        tests/test_host_bluetooth.c
+        tests/test_host_device_user.c
+        tests/test_host_ethernet.c
+        tests/test_host_link.c
+        tests/test_host_peripherals.c
+        tests/test_host_wifi.c
+    )
     target_link_libraries(wlh_host_core_tests PRIVATE wlh_host_core Threads::Threads)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(wlh_host_core_tests PRIVATE

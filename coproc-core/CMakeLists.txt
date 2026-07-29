@@ -13,7 +13,22 @@ if(NOT TARGET wlh_osal)
     ${CMAKE_CURRENT_BINARY_DIR}/common-build EXCLUDE_FROM_ALL)
 endif()
 set(BUILD_TESTING "${WLH_COPROC_BUILD_TESTING}")
-add_library(wlh_coproc_core STATIC src/coproc.c)
+add_library(wlh_coproc_core STATIC
+  src/coproc.c
+  src/coproc_adc.c
+  src/coproc_bluetooth.c
+  src/coproc_diagnostics.c
+  src/coproc_device_info.c
+  src/coproc_ethernet.c
+  src/coproc_frame.c
+  src/coproc_io.c
+  src/coproc_kv.c
+  src/coproc_link.c
+  src/coproc_rpc.c
+  src/coproc_user_passthrough.c
+  src/coproc_wifi.c
+  src/coproc_wire.c
+)
 add_library(wlh::coproc_core ALIAS wlh_coproc_core)
 target_include_directories(wlh_coproc_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_features(wlh_coproc_core PUBLIC c_std_99)
@@ -30,7 +45,14 @@ endif()
 if(BUILD_TESTING)
   find_package(Threads REQUIRED)
   wlh_common_enable_posix_osal(BUILD_TESTING OFF)
-  add_executable(wlh_coproc_core_tests tests/test_coproc.c)
+  add_executable(wlh_coproc_core_tests
+    tests/coproc_test_support.c
+    tests/test_coproc.c
+    tests/test_coproc_bluetooth.c
+    tests/test_coproc_device_user.c
+    tests/test_coproc_link_data.c
+    tests/test_coproc_peripherals.c
+    tests/test_coproc_wifi.c)
   target_compile_features(wlh_coproc_core_tests PRIVATE c_std_11)
   target_link_libraries(wlh_coproc_core_tests PRIVATE
     wlh_coproc_core wlh::posix_osal Threads::Threads)
