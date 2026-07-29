@@ -105,9 +105,84 @@ int enqueue_job(
     );
 }
 
+/* Combine already-queued Ethernet records into one payload.  Credits and
+ * sequences belong to wire frames, not raw records, so this deliberately
+ * turns two or more queued jobs into one send_payload() call.  The queue is
+ * FIFO: as soon as a non-Ethernet job, a different channel, or a record that
+ * does not fit is observed, retain it as the worker's next job rather than
+ * reordering it behind later traffic.
+ *
+ * This runs with state_mutex held.  ethernet_send() takes the same mutex
+ * while admitting jobs, making the pending counter exact and ensuring the
+ * source jobs cannot be modified while their record bytes are copied. */
+static coproc_data_job_t *aggregate_ethernet_jobs(
+    wlh_coproc_t *coproc,
+    coproc_data_job_t *data,
+    coproc_job_t *deferred,
+    bool *has_deferred
+) {
+    const size_t payload_capacity =
+        coproc->config.max_frame_size - WLH_FRAME_HEADER_SIZE;
+    coproc_job_t next;
+
+    while (*has_deferred == false && coproc->config.osal.queue_receive(
+                                         coproc->config.osal.context,
+                                         &coproc->core_queue,
+                                         &next,
+                                         WLH_OSAL_NO_WAIT
+                                     ) == 0) {
+        coproc_data_job_t *candidate;
+
+        if (next.kind != COPROC_JOB_ETHERNET_TX) {
+            *deferred = next;
+            *has_deferred = true;
+            break;
+        }
+        candidate = next.payload;
+        if (candidate->channel != data->channel ||
+            data->size > payload_capacity ||
+            candidate->size > payload_capacity - data->size) {
+            *deferred = next;
+            *has_deferred = true;
+            break;
+        }
+        if (data->capacity < payload_capacity) {
+            coproc_data_job_t *expanded =
+                (coproc_data_job_t *)coproc->config.buffers.alloc(
+                    coproc->config.buffers.context,
+                    sizeof(*expanded) + payload_capacity
+                );
+            if (expanded == NULL) {
+                *deferred = next;
+                *has_deferred = true;
+                break;
+            }
+            memset(expanded, 0, sizeof(*expanded));
+            expanded->channel = data->channel;
+            expanded->size = data->size;
+            expanded->capacity = payload_capacity;
+            memcpy(expanded->data, data->data, data->size);
+            coproc->config.buffers.free(
+                coproc->config.buffers.context, (uint8_t *)data
+            );
+            data = expanded;
+        }
+        memcpy(data->data + data->size, candidate->data, candidate->size);
+        data->size += candidate->size;
+        if (coproc->ethernet_tx_jobs_pending > 0u)
+            --coproc->ethernet_tx_jobs_pending;
+        coproc->config.buffers.free(
+            coproc->config.buffers.context, (uint8_t *)candidate
+        );
+    }
+    return data;
+}
+
 static void coproc_worker(void *argument) {
     wlh_coproc_t *coproc = argument;
     coproc_job_t job;
+    coproc_job_t deferred_job;
+    bool has_deferred_job = false;
     (void)coproc->config.osal.mutex_lock(
         coproc->config.osal.context, &coproc->state_mutex, WLH_OSAL_WAIT_FOREVER
     );
@@ -131,9 +206,14 @@ static void coproc_worker(void *argument) {
             coproc->config.osal.context, &coproc->state_mutex
         );
 
-        if (coproc->config.osal.queue_receive(
-                coproc->config.osal.context, &coproc->core_queue, &job, wait_ms
-            ) == 0) {
+        if ((has_deferred_job ||
+             coproc->config.osal.queue_receive(
+                 coproc->config.osal.context, &coproc->core_queue, &job, wait_ms
+             ) == 0)) {
+            if (has_deferred_job) {
+                job = deferred_job;
+                has_deferred_job = false;
+            }
             (void)coproc->config.osal.mutex_lock(
                 coproc->config.osal.context,
                 &coproc->state_mutex,
@@ -199,6 +279,11 @@ static void coproc_worker(void *argument) {
                 );
             } else if (job.kind == COPROC_JOB_ETHERNET_TX) {
                 coproc_data_job_t *data = job.payload;
+                data = aggregate_ethernet_jobs(
+                    coproc, data, &deferred_job, &has_deferred_job
+                );
+                if (coproc->ethernet_tx_jobs_pending > 0u)
+                    --coproc->ethernet_tx_jobs_pending;
                 (void)send_payload(
                     coproc, data->channel, data->data, data->size
                 );

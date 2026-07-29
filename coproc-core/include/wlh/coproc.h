@@ -450,6 +450,10 @@ typedef struct wlh_coproc {
     wlh_osal_queue_t core_queue;
     wlh_osal_mutex_t state_mutex;
     uintptr_t core_queue_storage[WLH_COPROC_MAX_QUEUE_DEPTH * 2u];
+    /* Ethernet RX is lossy by design under congestion. Keep its queued work
+     * below the core queue capacity so control RPCs and completion events can
+     * always make progress. Protected by state_mutex. */
+    uint8_t ethernet_tx_jobs_pending;
     bool worker_started;
     bool worker_stopping;
     uint32_t next_backend_operation_id;

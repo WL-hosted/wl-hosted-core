@@ -56,7 +56,7 @@ wlh_coproc_result_t send_payload(
 
     wlh_frame_header_init(&header, channel);
     header.session_id = coproc->session_id;
-    header.sequence = coproc->tx_sequence[channel]++;
+    header.sequence = coproc->tx_sequence[channel];
     if (wlh_frame_encode(
             frame,
             WLH_FRAME_HEADER_SIZE + payload_size,
@@ -74,6 +74,11 @@ wlh_coproc_result_t send_payload(
         coproc->config.buffers.free(coproc->config.buffers.context, frame);
         return WLH_COPROC_TRANSPORT_ERROR;
     }
+
+    /* The transport owns frame completion after a successful submission. Do
+     * not consume a sequence number when admission failed synchronously: the
+     * next accepted frame must remain contiguous on this reliable channel. */
+    ++coproc->tx_sequence[channel];
 
     if (channel != WLH_CHANNEL_LINK_CONTROL) {
         --coproc->tx_credit[channel];

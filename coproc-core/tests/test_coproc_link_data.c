@@ -1,5 +1,37 @@
 #include "coproc_test_support.h"
 
+#include "../src/coproc_internal.h"
+
+static coproc_data_job_t *make_ethernet_job(
+    wlh_coproc_t *core, const uint8_t *payload, size_t payload_size
+) {
+    coproc_data_job_t *job = (coproc_data_job_t *)core->config.buffers.alloc(
+        core->config.buffers.context,
+        sizeof(*job) + WLH_RAW_RECORD_HEADER_SIZE + payload_size
+    );
+    size_t record_size = 0u;
+
+    CHECK(job != NULL);
+    if (job == NULL)
+        return NULL;
+    memset(job, 0, sizeof(*job));
+    job->channel = WLH_CHANNEL_ETHERNET_STA;
+    CHECK(
+        wlh_raw_record_encode(
+            job->data,
+            WLH_RAW_RECORD_HEADER_SIZE + payload_size,
+            &record_size,
+            1u,
+            0u,
+            payload,
+            payload_size
+        ) == WLH_WIRE_OK
+    );
+    job->size = record_size;
+    job->capacity = record_size;
+    return job;
+}
+
 void test_hello_wifi_and_ethernet(void) {
     fixture_t f;
     wlh_coproc_t core;
@@ -279,6 +311,85 @@ void test_hello_wifi_and_ethernet(void) {
         check_raw_record(
             frame_payload, frame_payload_size, payload, sizeof(payload)
         );
+    }
+    {
+        /* Hold the worker's mutex while placing two adjacent Ethernet jobs on
+         * its queue. This deterministically exercises the worker-side
+         * coalescer without depending on host-thread scheduling. */
+        const uint8_t first[] = {0xaa, 0xbb, 0xcc};
+        const uint8_t second[] = {0x11, 0x22};
+        coproc_data_job_t *first_job;
+        coproc_data_job_t *second_job;
+        wlh_raw_record_iterator_t iterator;
+        wlh_raw_record_view_t record;
+        wlh_frame_header_t aggregated_header;
+        unsigned sent_before = f.sent_count;
+
+        first_job = make_ethernet_job(&core, first, sizeof(first));
+        second_job = make_ethernet_job(&core, second, sizeof(second));
+        if (first_job != NULL && second_job != NULL) {
+            CHECK(
+                config.osal.mutex_lock(
+                    config.osal.context,
+                    &core.state_mutex,
+                    WLH_OSAL_WAIT_FOREVER
+                ) == 0
+            );
+            CHECK(
+                enqueue_job(
+                    &core, COPROC_JOB_ETHERNET_TX, first_job, WLH_OSAL_NO_WAIT
+                ) == 0
+            );
+            CHECK(
+                enqueue_job(
+                    &core, COPROC_JOB_ETHERNET_TX, second_job, WLH_OSAL_NO_WAIT
+                ) == 0
+            );
+            core.ethernet_tx_jobs_pending += 2u;
+            config.osal.mutex_unlock(config.osal.context, &core.state_mutex);
+
+            wait_for_sent(&f, sent_before + 1u);
+            CHECK(f.sent_count == sent_before + 1u);
+            CHECK(
+                wlh_frame_decode(
+                    &aggregated_header,
+                    &frame_payload,
+                    &frame_payload_size,
+                    f.sent,
+                    f.sent_size,
+                    4096
+                ) == WLH_WIRE_OK
+            );
+            CHECK(aggregated_header.channel == WLH_CHANNEL_ETHERNET_STA);
+            CHECK(
+                wlh_raw_record_iterator_init(
+                    &iterator, frame_payload, frame_payload_size
+                ) == WLH_WIRE_OK
+            );
+            CHECK(
+                wlh_raw_record_iterator_next(&iterator, &record) == WLH_WIRE_OK
+            );
+            CHECK(record.payload_size == sizeof(first));
+            CHECK(memcmp(record.payload, first, sizeof(first)) == 0);
+            CHECK(
+                wlh_raw_record_iterator_next(&iterator, &record) == WLH_WIRE_OK
+            );
+            CHECK(record.payload_size == sizeof(second));
+            CHECK(memcmp(record.payload, second, sizeof(second)) == 0);
+            CHECK(
+                wlh_raw_record_iterator_next(&iterator, &record) == WLH_WIRE_END
+            );
+            CHECK(core.ethernet_tx_jobs_pending == 0u);
+        } else {
+            if (first_job != NULL)
+                config.buffers.free(
+                    config.buffers.context, (uint8_t *)first_job
+                );
+            if (second_job != NULL)
+                config.buffers.free(
+                    config.buffers.context, (uint8_t *)second_job
+                );
+        }
     }
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }

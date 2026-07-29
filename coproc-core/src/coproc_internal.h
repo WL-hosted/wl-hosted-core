@@ -9,6 +9,7 @@
 
 #define RPC_BUFFER_SIZE 1536u
 #define RAW_HEADER_SIZE 8u
+#define WLH_COPROC_CONTROL_QUEUE_RESERVE 4u
 #define WLH_COPROC_MAX_SSID_SIZE                                               \
     sizeof(((wlh_protocol_v1_WifiLinkInfo *)0)->ssid.bytes)
 
@@ -62,6 +63,9 @@ typedef struct coproc_data_job {
     uint16_t service_id;
     uint8_t channel;
     size_t size;
+    /* Allocated payload storage. Ethernet jobs begin compact and grow to one
+     * bounded wire payload only when the worker can combine a queued peer. */
+    size_t capacity;
     uint8_t data[];
 } coproc_data_job_t;
 

@@ -276,9 +276,22 @@ static void host_worker(void *argument) {
                 );
             } else if (job.kind == WLH_HOST_JOB_ETHERNET_TX) {
                 wlh_host_data_job_t *data = job.payload;
-                (void)send_payload_frame(
+                wlh_host_result_t result;
+                uint8_t ethernet_index =
+                    data->channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
+                if (host->ethernet_tx_queued[ethernet_index] > 0u)
+                    --host->ethernet_tx_queued[ethernet_index];
+                result = send_payload_frame(
                     host, data->channel, data->data, data->size, false
                 );
+                if (result != WLH_HOST_OK)
+                    WLH_LOGW(
+                        "wlh_host",
+                        "ethernet TX failed channel=%u result=%d credit=%lu",
+                        (unsigned)data->channel,
+                        (int)result,
+                        (unsigned long)host->tx_credit[data->channel]
+                    );
                 host->config.buffers.free(
                     host->config.buffers.context, (uint8_t *)data
                 );

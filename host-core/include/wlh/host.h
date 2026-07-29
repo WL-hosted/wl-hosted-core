@@ -262,6 +262,9 @@ typedef struct wlh_host {
     uint32_t tx_sequence[WLH_HOST_CHANNEL_COUNT];
     uint32_t expected_rx_sequence[WLH_HOST_CHANNEL_COUNT];
     uint32_t tx_credit[WLH_HOST_CHANNEL_COUNT];
+    /* Ethernet linkoutput must only report success when there is credit for
+     * the queued frame. Protected by state_mutex. */
+    uint32_t ethernet_tx_queued[2];
     bool rx_sequence_valid[WLH_HOST_CHANNEL_COUNT];
 
     wlh_pending_rpc_t pending[WLH_HOST_MAX_PENDING];

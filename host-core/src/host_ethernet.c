@@ -1,4 +1,5 @@
 #include "host_internal.h"
+#include "wlh/log.h"
 
 #include <string.h>
 
@@ -20,9 +21,12 @@ static wlh_host_result_t ethernet_send(
     size_t size
 ) {
     uint8_t *record;
+    uint8_t ethernet_index;
+    static uint32_t admission_denials;
     if (host == NULL || ethernet_frame == NULL || size == 0u || size > 1600u ||
         !host->worker_started)
         return WLH_HOST_INVALID_ARGUMENT;
+    ethernet_index = channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
     record = host->config.buffers.alloc(
         host->config.buffers.context, sizeof(wlh_host_data_job_t) + 8u + size
     );
@@ -41,14 +45,49 @@ static wlh_host_result_t ethernet_send(
             return WLH_HOST_INVALID_ARGUMENT;
         }
         job->size = record_size;
-        if (enqueue_job(
-                host, WLH_HOST_JOB_ETHERNET_TX, job, WLH_OSAL_NO_WAIT
+        if (host->config.osal.mutex_lock(
+                host->config.osal.context,
+                &host->state_mutex,
+                /* The worker holds this mutex while processing each RX
+                 * frame. A zero-wait attempt starves linkoutput during a
+                 * continuous Wi-Fi RX burst, dropping every ARP/TCP frame.
+                 * Keep this bounded while allowing one worker critical
+                 * section to complete. */
+                20u
             ) != 0) {
             host->config.buffers.free(
                 host->config.buffers.context, (uint8_t *)job
             );
             return WLH_HOST_PENDING_FULL;
         }
+        if (host->tx_credit[channel] <=
+                host->ethernet_tx_queued[ethernet_index] ||
+            enqueue_job(
+                host, WLH_HOST_JOB_ETHERNET_TX, job, WLH_OSAL_NO_WAIT
+            ) != 0) {
+            ++admission_denials;
+            if (admission_denials <= 5u || admission_denials % 100u == 0u) {
+                WLH_LOGW(
+                    "wlh_host",
+                    "ethernet admission denied channel=%u credit=%lu "
+                    "queued=%lu",
+                    (unsigned)channel,
+                    (unsigned long)host->tx_credit[channel],
+                    (unsigned long)host->ethernet_tx_queued[ethernet_index]
+                );
+            }
+            host->config.osal.mutex_unlock(
+                host->config.osal.context, &host->state_mutex
+            );
+            host->config.buffers.free(
+                host->config.buffers.context, (uint8_t *)job
+            );
+            return WLH_HOST_NO_CREDIT;
+        }
+        ++host->ethernet_tx_queued[ethernet_index];
+        host->config.osal.mutex_unlock(
+            host->config.osal.context, &host->state_mutex
+        );
     }
     return WLH_HOST_OK;
 }
