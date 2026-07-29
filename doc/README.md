@@ -13,6 +13,7 @@
 | [host_core_integration.md](host_core_integration.md) | 开发指南/API | Host Core 公共 API、config、事件与生命周期 |
 | [coproc_core_integration.md](coproc_core_integration.md) | 开发指南/API | Coprocessor Core 公共 API、后端回调与事件注入 |
 | [lifecycle.md](lifecycle.md) | 运行时说明 | Host/Coproc 初始化、启动、恢复、停止状态机 |
+| [api_sync_async.md](api_sync_async.md) | 接口规范 | Host/Coproc 公共 API 与 Adapter 回调的同步、异步和非阻塞 ingress 语义 |
 | [wire_protocol_usage.md](wire_protocol_usage.md) | 协议使用指南 | 在 Core 中使用 `wlh_protocol` 编解码与路由 |
 | [testing.md](testing.md) | 测试指南 | 构建矩阵、mock OSAL、fake transport、测试钩子 |
 | [troubleshooting.md](troubleshooting.md) | 运维指南 | 常见集成问题与排查思路 |
