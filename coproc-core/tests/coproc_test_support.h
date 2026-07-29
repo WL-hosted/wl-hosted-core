@@ -42,6 +42,8 @@ typedef struct fixture {
     size_t ethernet_size;
     size_t ethernet_ap_size;
     unsigned sent_count;
+    uint8_t sent_log[16][4096];
+    size_t sent_log_size[16];
     int device_info_queries;
     wlh_coproc_device_info_t device_info;
     int device_info_status;
@@ -87,6 +89,24 @@ typedef struct fixture {
     uint8_t bt_last_hci[64];
     size_t bt_last_hci_size;
     unsigned bt_tx_ready_calls;
+    unsigned ota_begins;
+    unsigned ota_writes;
+    unsigned ota_finalizes;
+    unsigned ota_aborts;
+    unsigned ota_activates;
+    uint32_t ota_last_operation_id;
+    uint32_t ota_last_transfer_id;
+    uint64_t ota_last_offset;
+    uint64_t ota_last_bytes_sent;
+    bool ota_last_reboot;
+    wlh_coproc_ota_begin_params_t ota_last_params;
+    uint8_t ota_last_data[WLH_COPROC_OTA_CHUNK_SIZE];
+    size_t ota_last_data_size;
+    uint64_t ota_written_total;
+    int ota_submit_status;
+    int ota_write_status;
+    int ota_backend_status;
+    bool ota_auto_complete;
     wlh_posix_osal_t posix;
 } fixture_t;
 
@@ -206,6 +226,73 @@ void check_sent_hci_record(
     uint8_t h4_type,
     const uint8_t *expected,
     size_t expected_size
+);
+
+int ota_begin(
+    void *context,
+    uint32_t operation_id,
+    uint32_t transfer_id,
+    const wlh_coproc_ota_begin_params_t *params
+);
+int ota_write(
+    void *context,
+    uint32_t transfer_id,
+    uint64_t offset,
+    const uint8_t *data,
+    size_t size
+);
+int ota_finalize(
+    void *context,
+    uint32_t operation_id,
+    uint32_t transfer_id,
+    uint64_t bytes_sent
+);
+int ota_abort(void *context, uint32_t operation_id, uint32_t transfer_id);
+int ota_activate(
+    void *context, uint32_t operation_id, uint32_t transfer_id, bool reboot
+);
+void prepare_ready_ota_core(fixture_t *fixture, wlh_coproc_t *core);
+void ota_send_request(
+    wlh_coproc_t *core,
+    uint16_t method,
+    uint32_t request_id,
+    const pb_msgdesc_t *fields,
+    const void *message
+);
+void ota_expect_status(
+    fixture_t *fixture,
+    wlh_coproc_t *core,
+    uint16_t method,
+    uint32_t request_id,
+    const pb_msgdesc_t *fields,
+    const void *message,
+    int16_t status_code
+);
+size_t make_ota_stream_frame(
+    uint8_t *output,
+    size_t output_capacity,
+    uint32_t session,
+    uint32_t transfer_id,
+    uint64_t offset,
+    const uint8_t *data,
+    size_t data_size
+);
+void ota_stream_send(
+    wlh_coproc_t *core,
+    uint32_t session,
+    uint32_t transfer_id,
+    uint64_t offset,
+    const uint8_t *data,
+    size_t data_size
+);
+bool find_sent_rpc(
+    fixture_t *fixture,
+    uint16_t service_id,
+    uint16_t method_id,
+    wlh_rpc_kind_t kind,
+    wlh_rpc_envelope_t *rpc,
+    const uint8_t **rpc_payload,
+    size_t *rpc_payload_size
 );
 
 #endif

@@ -61,7 +61,8 @@ typedef enum wlh_host_event_kind {
     WLH_HOST_EVENT_WIFI_AP_CLIENT_JOINED,
     WLH_HOST_EVENT_WIFI_AP_CLIENT_LEFT,
     WLH_HOST_EVENT_ETHERNET_AP_RX,
-    WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED
+    WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED,
+    WLH_HOST_EVENT_OTA_PROGRESS
 } wlh_host_event_kind_t;
 
 typedef struct wlh_host_event {
@@ -188,6 +189,16 @@ typedef wlh_host_result_t (*wlh_host_bluetooth_hci_rx_fn)(
  * call wlh_host_bluetooth_hci_send inline. */
 typedef void (*wlh_host_bluetooth_hci_tx_ready_fn)(void *context);
 
+typedef wlh_host_result_t (*wlh_host_ota_stream_rx_fn)(
+    void *context,
+    uint32_t transfer_id,
+    uint64_t offset,
+    const uint8_t *data,
+    size_t size,
+    uint16_t flags
+);
+typedef void (*wlh_host_ota_stream_tx_ready_fn)(void *context);
+
 typedef struct wlh_host_config {
     wlh_transport_ops_t transport;
     wlh_buffer_ops_t buffers;
@@ -200,6 +211,9 @@ typedef struct wlh_host_config {
     wlh_host_bluetooth_hci_rx_fn bluetooth_hci_rx;
     wlh_host_bluetooth_hci_tx_ready_fn bluetooth_hci_tx_ready;
     void *bluetooth_context;
+    wlh_host_ota_stream_rx_fn ota_stream_rx;
+    wlh_host_ota_stream_tx_ready_fn ota_stream_tx_ready;
+    void *ota_context;
 
     uint32_t max_frame_size;
     uint32_t rpc_timeout_ms;
@@ -258,6 +272,10 @@ typedef struct wlh_host {
     uint32_t bluetooth_tx_inflight;
     uint32_t bluetooth_max_record;
     wlh_bluetooth_state_t bluetooth_state;
+    bool ota_supported;
+    uint32_t ota_max_record;
+    uint32_t ota_tx_inflight;
+    char peer_version[33];
 
     uint64_t started_ms;
 
@@ -393,6 +411,82 @@ wlh_host_result_t wlh_host_bluetooth_get_info(
 wlh_host_result_t wlh_host_bluetooth_hci_send(
     wlh_host_t *host, uint8_t h4_type, const uint8_t *packet, size_t size
 );
+
+typedef struct wlh_host_ota_begin_params {
+    uint64_t image_size;
+    uint8_t sha256[32];
+    const char *target_version;
+    const char *slot;
+    const uint8_t *signature;
+    size_t signature_size;
+} wlh_host_ota_begin_params_t;
+
+typedef struct wlh_host_ota_begin_response {
+    uint32_t transfer_id;
+    uint32_t stream_chunk_size;
+    uint32_t stream_alignment;
+} wlh_host_ota_begin_response_t;
+
+typedef struct wlh_host_ota_query_response {
+    uint32_t state;
+    uint32_t transfer_id;
+    uint64_t image_size;
+    uint64_t bytes_received;
+    char target_version[33];
+} wlh_host_ota_query_response_t;
+
+typedef void (*wlh_host_ota_begin_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const wlh_host_ota_begin_response_t *response
+);
+typedef void (*wlh_host_ota_query_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const wlh_host_ota_query_response_t *response
+);
+
+wlh_host_result_t wlh_host_ota_begin(
+    wlh_host_t *host,
+    const wlh_host_ota_begin_params_t *params,
+    wlh_host_ota_begin_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_ota_finalize(
+    wlh_host_t *host,
+    uint32_t transfer_id,
+    uint64_t bytes_sent,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_ota_abort(
+    wlh_host_t *host,
+    uint32_t transfer_id,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_ota_activate(
+    wlh_host_t *host,
+    uint32_t transfer_id,
+    bool reboot,
+    wlh_rpc_completion_fn completion,
+    void *context
+);
+wlh_host_result_t wlh_host_ota_query(
+    wlh_host_t *host, wlh_host_ota_query_fn completion, void *context
+);
+wlh_host_result_t wlh_host_ota_stream_send(
+    wlh_host_t *host,
+    uint32_t transfer_id,
+    uint64_t offset,
+    const uint8_t *data,
+    size_t size
+);
+const char *wlh_host_get_peer_version(const wlh_host_t *host);
 
 /* Device Information service client. Sizes match the protocol schema. */
 typedef struct wlh_host_device_info {

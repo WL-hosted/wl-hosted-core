@@ -14,6 +14,7 @@ typedef enum wlh_host_job_kind {
     WLH_HOST_JOB_RPC_REQUEST,
     WLH_HOST_JOB_ETHERNET_TX,
     WLH_HOST_JOB_BLUETOOTH_TX,
+    WLH_HOST_JOB_OTA_TX,
     WLH_HOST_JOB_TRANSPORT_LOST,
     WLH_HOST_JOB_TRANSPORT_STARTED,
     WLH_HOST_JOB_TRANSPORT_START_FAILED,
@@ -149,6 +150,9 @@ wlh_host_result_t wlh_host_internal_process_hci_frame(
     const uint8_t *payload,
     size_t payload_size
 );
+wlh_host_result_t wlh_host_internal_process_ota_frame(
+    wlh_host_t *host, const uint8_t *payload, size_t payload_size
+);
 
 #define now_ms wlh_host_internal_now_ms
 #define dispatch_event wlh_host_internal_dispatch_event
@@ -173,6 +177,7 @@ wlh_host_result_t wlh_host_internal_process_hci_frame(
 #define process_frame wlh_host_internal_process_frame
 #define process_rpc_request wlh_host_internal_process_rpc_request
 #define process_hci_frame wlh_host_internal_process_hci_frame
+#define process_ota_frame wlh_host_internal_process_ota_frame
 #define rpc_message_request wlh_host_internal_rpc_message_request
 #define enqueue_job wlh_host_internal_enqueue_job
 

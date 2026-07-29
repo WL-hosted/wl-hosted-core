@@ -13,6 +13,7 @@
 #include "io.pb.h"
 #include "kv.pb.h"
 #include "link.pb.h"
+#include "ota.pb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
 #include "user_passthrough.pb.h"
@@ -240,6 +241,18 @@ static void coproc_worker(void *argument) {
                 coproc->config.buffers.free(
                     coproc->config.buffers.context, (uint8_t *)fatal
                 );
+            } else if (job.kind == COPROC_JOB_OTA_COMPLETE) {
+                coproc_ota_complete_job_t *completed = job.payload;
+                ota_operation_completed(coproc, completed);
+                coproc->config.buffers.free(
+                    coproc->config.buffers.context, (uint8_t *)completed
+                );
+            } else if (job.kind == COPROC_JOB_OTA_WRITE_COMPLETE) {
+                coproc_ota_write_job_t *completed = job.payload;
+                ota_write_completed(coproc, completed);
+                coproc->config.buffers.free(
+                    coproc->config.buffers.context, (uint8_t *)completed
+                );
             } else if (job.kind == COPROC_JOB_TRANSPORT_FAILED) {
                 WLH_LOGW("wlh_coproc", "transport failed");
                 set_state(coproc, WLH_COPROC_STATE_FAILED);
@@ -290,6 +303,17 @@ wlh_coproc_result_t wlh_coproc_init(
         return WLH_COPROC_INVALID_ARGUMENT;
     }
 
+    /* The OTA backend is all-or-none as well: begin/write/finalize/activate
+       are required together. abort is optional; ota_reset and the ABORT
+       handler fall back to a synchronous local reset when it is absent. */
+    if ((config->ota.begin != NULL || config->ota.write != NULL ||
+         config->ota.finalize != NULL || config->ota.activate != NULL ||
+         config->ota.abort != NULL) &&
+        (config->ota.begin == NULL || config->ota.write == NULL ||
+         config->ota.finalize == NULL || config->ota.activate == NULL)) {
+        return WLH_COPROC_INVALID_ARGUMENT;
+    }
+
     memset(coproc, 0, sizeof(*coproc));
     coproc->config = *config;
     if (coproc->config.core_queue_depth == 0u)
@@ -301,6 +325,8 @@ wlh_coproc_result_t wlh_coproc_init(
     coproc->next_session_id =
         config->initial_session_id != 0u ? config->initial_session_id : 1u;
     coproc->next_backend_operation_id = 1u;
+    coproc->next_ota_transfer_id = 1u;
+    coproc->ota_state = (uint32_t)wlh_protocol_v1_OtaState_OTA_STATE_IDLE;
     return WLH_COPROC_OK;
 }
 

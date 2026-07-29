@@ -40,7 +40,7 @@ wlh_host_result_t send_hello(wlh_host_t *host) {
     hello->checksum_modes[1] =
         wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_CRC32C;
     hello->max_rpc_payload = WLH_HOST_PROTOBUF_LIMIT;
-    hello->services_count = 4u;
+    hello->services_count = 5u;
     // clang-format off
     hello->services[0] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_LINK, 1u, 0u, 0u,
@@ -57,8 +57,11 @@ wlh_host_result_t send_hello(wlh_host_t *host) {
     hello->services[3] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_BLUETOOTH, 1u, 0u, 0u,
     };
+    hello->services[4] = (wlh_protocol_v1_ServiceVersionRange){
+        WLH_SERVICE_OTA, 1u, 0u, 0u,
+    };
 
-    hello->channels_count = 6u;
+    hello->channels_count = 7u;
     hello->channels[0] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_LINK_CONTROL, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
@@ -81,6 +84,9 @@ wlh_host_result_t send_hello(wlh_host_t *host) {
 
     hello->channels[5] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_BLUETOOTH_HCI_ADV, WLH_HOST_MAX_HCI_PACKET, 0u, 1u, 0u,
+    };
+    hello->channels[6] = (wlh_protocol_v1_ChannelCapability){
+        WLH_CHANNEL_OTA_STREAM, 4096u, 0u, 1u, 0u,
     };
     // clang-format on
     memset(&envelope, 0, sizeof(envelope));
@@ -122,6 +128,12 @@ wlh_host_result_t handle_hello_response(
         return WLH_HOST_PROTOCOL_ERROR;
     }
     host->session_id = hello->session_id;
+    memcpy(
+        host->peer_version,
+        hello->implementation_version,
+        sizeof(host->peer_version)
+    );
+    host->peer_version[sizeof(host->peer_version) - 1u] = '\0';
     host->diagnostics.session_id = hello->session_id;
     WLH_LOGI(
         "wlh_host", "negotiated session %lu", (unsigned long)hello->session_id
@@ -166,6 +178,28 @@ wlh_host_result_t handle_hello_response(
         host->bluetooth_hci_stopped = false;
         host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
     }
+    {
+        bool service_found = false;
+        bool channel_found = false;
+        uint32_t record_limit = 4096u;
+        for (index = 0; index < hello->services_count; ++index)
+            if (hello->services[index].service_id == WLH_SERVICE_OTA)
+                service_found = true;
+        for (index = 0; index < hello->channels_count; ++index) {
+            if (hello->channels[index].channel_id == WLH_CHANNEL_OTA_STREAM) {
+                channel_found = true;
+                if (hello->channels[index].max_frame_payload != 0u)
+                    record_limit = hello->channels[index].max_frame_payload;
+            }
+        }
+        if (record_limit > host->config.max_frame_size - WLH_FRAME_HEADER_SIZE -
+                               WLH_RAW_RECORD_HEADER_SIZE)
+            record_limit = host->config.max_frame_size - WLH_FRAME_HEADER_SIZE -
+                           WLH_RAW_RECORD_HEADER_SIZE;
+        host->ota_supported =
+            service_found && channel_found && record_limit >= 16u;
+        host->ota_max_record = record_limit;
+    }
     host->config.buffers.free(host->config.buffers.context, (uint8_t *)hello);
     host->diagnostics.last_peer_activity_ms = now_ms(host);
     set_state(host, WLH_HOST_STATE_READY);
@@ -193,6 +227,14 @@ static void handle_credit_update(
                 host->config.bluetooth_hci_tx_ready(
                     host->config.bluetooth_context
                 );
+        }
+        if (credit.channel_id == WLH_CHANNEL_OTA_STREAM &&
+            host->config.ota_stream_tx_ready != NULL) {
+            uint32_t inflight = host->ota_tx_inflight;
+            bool was_usable = old > inflight;
+            bool now_usable = host->tx_credit[credit.channel_id] > inflight;
+            if (!was_usable && now_usable)
+                host->config.ota_stream_tx_ready(host->config.ota_context);
         }
         if (host->state == WLH_HOST_STATE_CONGESTED)
             set_state(host, WLH_HOST_STATE_READY);
@@ -259,6 +301,9 @@ static void handle_session_changed(
     host->bluetooth_hci_stopped = false;
     host->bluetooth_tx_inflight = 0u;
     host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
+    host->ota_supported = false;
+    host->ota_tx_inflight = 0u;
+    host->peer_version[0] = '\0';
     (void)send_hello(host);
 }
 
@@ -327,6 +372,9 @@ void process_transport_lost(wlh_host_t *host) {
     host->bluetooth_hci_stopped = false;
     host->bluetooth_tx_inflight = 0u;
     host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
+    host->ota_supported = false;
+    host->ota_tx_inflight = 0u;
+    host->peer_version[0] = '\0';
     set_state(host, WLH_HOST_STATE_RECOVERING);
     if (host->config.transport.stop(
             host->config.transport.context, transport_stop_complete, host

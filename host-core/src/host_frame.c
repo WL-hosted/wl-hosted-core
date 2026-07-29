@@ -50,6 +50,9 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
         host->bluetooth_hci_stopped = false;
         host->bluetooth_tx_inflight = 0u;
         host->bluetooth_state = WLH_BLUETOOTH_STATE_UNSPECIFIED;
+        host->ota_supported = false;
+        host->ota_tx_inflight = 0u;
+        host->peer_version[0] = '\0';
         set_state(host, WLH_HOST_STATE_RECOVERING);
         (void)send_hello(host);
         return WLH_HOST_SESSION_CHANGED;
@@ -77,6 +80,8 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
         return process_hci_frame(
             host, header.channel, frame_payload, frame_payload_size
         );
+    if (header.channel == WLH_CHANNEL_OTA_STREAM)
+        return process_ota_frame(host, frame_payload, frame_payload_size);
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
         header.channel == WLH_CHANNEL_ETHERNET_AP) {
         bool dispatch_failed = false;
@@ -248,6 +253,20 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
                 envelope.method_id,
                 (const uint8_t *)&event,
                 sizeof(event)
+            );
+            return WLH_HOST_OK;
+        }
+
+        if (envelope.kind == WLH_RPC_KIND_EVENT &&
+            envelope.service_id == WLH_SERVICE_OTA &&
+            envelope.method_id == WLH_OTA_EVENT_PROGRESS) {
+            dispatch_event(
+                host,
+                WLH_HOST_EVENT_OTA_PROGRESS,
+                envelope.service_id,
+                envelope.method_id,
+                payload,
+                payload_size
             );
             return WLH_HOST_OK;
         }

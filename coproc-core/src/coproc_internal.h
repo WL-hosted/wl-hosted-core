@@ -47,7 +47,9 @@ typedef enum coproc_job_kind {
     COPROC_JOB_BLUETOOTH_COMPLETE,
     COPROC_JOB_BLUETOOTH_INFO,
     COPROC_JOB_BLUETOOTH_TX,
-    COPROC_JOB_BLUETOOTH_FATAL
+    COPROC_JOB_BLUETOOTH_FATAL,
+    COPROC_JOB_OTA_COMPLETE,
+    COPROC_JOB_OTA_WRITE_COMPLETE
 } coproc_job_kind_t;
 
 typedef struct coproc_job {
@@ -82,6 +84,17 @@ typedef struct coproc_bluetooth_info_job {
 typedef struct coproc_bluetooth_fatal_job {
     uint32_t reason;
 } coproc_bluetooth_fatal_job_t;
+
+typedef struct coproc_ota_complete_job {
+    uint32_t operation_id;
+    int backend_status;
+} coproc_ota_complete_job_t;
+
+typedef struct coproc_ota_write_job {
+    uint32_t transfer_id;
+    uint64_t bytes_received;
+    int backend_status;
+} coproc_ota_write_job_t;
 
 uint64_t wlh_coproc_internal_now_ms(const wlh_coproc_t *coproc);
 void wlh_coproc_internal_set_state(
@@ -225,6 +238,23 @@ wlh_coproc_result_t wlh_coproc_internal_send_event_message(
     const pb_msgdesc_t *fields,
     const void *message
 );
+bool wlh_coproc_internal_ota_backend_present(const wlh_coproc_t *coproc);
+void wlh_coproc_internal_ota_reset(wlh_coproc_t *coproc);
+wlh_coproc_result_t wlh_coproc_internal_handle_ota(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+);
+wlh_coproc_result_t wlh_coproc_internal_process_ota_frame(
+    wlh_coproc_t *coproc, const uint8_t *payload, size_t payload_size
+);
+void wlh_coproc_internal_ota_operation_completed(
+    wlh_coproc_t *coproc, const coproc_ota_complete_job_t *completed
+);
+void wlh_coproc_internal_ota_write_completed(
+    wlh_coproc_t *coproc, const coproc_ota_write_job_t *completed
+);
 
 #define now_ms wlh_coproc_internal_now_ms
 #define set_state wlh_coproc_internal_set_state
@@ -259,5 +289,11 @@ wlh_coproc_result_t wlh_coproc_internal_send_event_message(
 #define bluetooth_info_completed wlh_coproc_internal_bluetooth_info_completed
 #define bluetooth_enter_error wlh_coproc_internal_bluetooth_enter_error
 #define send_event_message wlh_coproc_internal_send_event_message
+#define ota_backend_present wlh_coproc_internal_ota_backend_present
+#define ota_reset wlh_coproc_internal_ota_reset
+#define handle_ota wlh_coproc_internal_handle_ota
+#define process_ota_frame wlh_coproc_internal_process_ota_frame
+#define ota_operation_completed wlh_coproc_internal_ota_operation_completed
+#define ota_write_completed wlh_coproc_internal_ota_write_completed
 
 #endif

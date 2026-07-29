@@ -14,6 +14,11 @@ int main(void) {
     test_bluetooth_lifecycle_and_info();
     test_bluetooth_hci();
     test_bluetooth_adv_channel();
+    test_ota_hello_advertisement();
+    test_ota_hello_with_bluetooth();
+    test_ota_full_flow();
+    test_ota_errors_idle();
+    test_ota_transfer_errors();
     if (failures != 0)
         return 1;
     puts("coprocessor core tests passed");

@@ -123,6 +123,10 @@ WLH_NOINLINE wlh_coproc_result_t handle_rpc(
         return handle_bluetooth(coproc, &request, message, message_size);
     }
 
+    if (request.service_id == WLH_SERVICE_OTA && ota_backend_present(coproc)) {
+        return handle_ota(coproc, &request, message, message_size);
+    }
+
     if (request.service_id == WLH_SERVICE_DIAGNOSTICS &&
         request.method_id == WLH_DIAGNOSTICS_METHOD_PING) {
         return handle_diagnostics_request(

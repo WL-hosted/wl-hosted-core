@@ -2,6 +2,7 @@
 #include "wlh/log.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "adc.pb.h"
@@ -20,6 +21,10 @@ static WLH_NOINLINE wlh_coproc_result_t
 send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
     wlh_protocol_v1_HelloResponse *response;
     size_t i;
+    size_t credit_index;
+    size_t service_index;
+    size_t channel_index;
+    const char *implementation_version;
     uint32_t selected_session;
     wlh_coproc_result_t result;
 
@@ -35,6 +40,10 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
         selected_session = coproc->next_session_id++;
     }
 
+    implementation_version = coproc->config.implementation_version[0] != '\0'
+                                 ? coproc->config.implementation_version
+                                 : "0.1.0";
+
     response->has_selected_protocol = true;
     response->selected_protocol.major = 1u;
     response->session_id = selected_session;
@@ -42,11 +51,15 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
     memcpy(
         response->implementation, "wlh-coproc-core", sizeof("wlh-coproc-core")
     );
-    memcpy(response->implementation_version, "0.1.0", sizeof("0.1.0"));
+    (void)snprintf(
+        response->implementation_version,
+        sizeof(response->implementation_version),
+        "%s",
+        implementation_version
+    );
     response->max_frame_size = coproc->config.max_frame_size;
     response->alignment = 1u;
     response->checksum_mode = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
-    response->initial_credits_count = 4u;
 
     for (i = 0; i < 4u; ++i) {
         response->initial_credits[i].channel_id = (uint32_t)i;
@@ -54,39 +67,71 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
         response->initial_credits[i].unit_bytes = 1u;
         coproc->tx_credit[i] = coproc->config.initial_credit;
     }
+    credit_index = 4u;
+    service_index = 0u;
+    channel_index = 0u;
 
     coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] = 0u;
     coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI_ADV] = 0u;
     if (bluetooth_backend_present(coproc)) {
-        response->services_count = 1u;
-        response->services[0].service_id = WLH_SERVICE_BLUETOOTH;
-        response->services[0].major = 1u;
-        response->channels_count = 1u;
-        response->channels[0].channel_id = WLH_CHANNEL_BLUETOOTH_HCI;
-        response->channels[0].max_frame_payload = WLH_COPROC_MAX_HCI_PACKET;
-        response->channels[0].alignment = 1u;
-        response->initial_credits[4].channel_id = WLH_CHANNEL_BLUETOOTH_HCI;
-        response->initial_credits[4].units =
+        response->services[service_index].service_id = WLH_SERVICE_BLUETOOTH;
+        response->services[service_index].major = 1u;
+        ++service_index;
+        response->channels[channel_index].channel_id =
+            WLH_CHANNEL_BLUETOOTH_HCI;
+        response->channels[channel_index].max_frame_payload =
+            WLH_COPROC_MAX_HCI_PACKET;
+        response->channels[channel_index].alignment = 1u;
+        ++channel_index;
+        response->initial_credits[credit_index].channel_id =
+            WLH_CHANNEL_BLUETOOTH_HCI;
+        response->initial_credits[credit_index].units =
             WLH_COPROC_BLUETOOTH_INITIAL_CREDIT;
-        response->initial_credits[4].unit_bytes = 1u;
-        response->initial_credits_count = 5u;
+        response->initial_credits[credit_index].unit_bytes = 1u;
+        ++credit_index;
         coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI] =
             WLH_COPROC_BLUETOOTH_INITIAL_CREDIT;
         if (coproc->bluetooth_adv_channel) {
-            response->channels_count = 2u;
-            response->channels[1].channel_id = WLH_CHANNEL_BLUETOOTH_HCI_ADV;
-            response->channels[1].max_frame_payload = WLH_COPROC_MAX_HCI_PACKET;
-            response->channels[1].alignment = 1u;
-            response->initial_credits[5].channel_id =
+            response->channels[channel_index].channel_id =
                 WLH_CHANNEL_BLUETOOTH_HCI_ADV;
-            response->initial_credits[5].units =
+            response->channels[channel_index].max_frame_payload =
+                WLH_COPROC_MAX_HCI_PACKET;
+            response->channels[channel_index].alignment = 1u;
+            ++channel_index;
+            response->initial_credits[credit_index].channel_id =
+                WLH_CHANNEL_BLUETOOTH_HCI_ADV;
+            response->initial_credits[credit_index].units =
                 WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT;
-            response->initial_credits[5].unit_bytes = 1u;
-            response->initial_credits_count = 6u;
+            response->initial_credits[credit_index].unit_bytes = 1u;
+            ++credit_index;
             coproc->tx_credit[WLH_CHANNEL_BLUETOOTH_HCI_ADV] =
                 WLH_COPROC_BLUETOOTH_ADV_INITIAL_CREDIT;
         }
     }
+
+    coproc->tx_credit[WLH_CHANNEL_OTA_STREAM] = 0u;
+    if (ota_backend_present(coproc)) {
+        response->services[service_index].service_id = WLH_SERVICE_OTA;
+        response->services[service_index].major = 1u;
+        ++service_index;
+        response->channels[channel_index].channel_id = WLH_CHANNEL_OTA_STREAM;
+        response->channels[channel_index].max_frame_payload =
+            WLH_COPROC_OTA_STREAM_HEADER_SIZE + WLH_COPROC_OTA_CHUNK_SIZE;
+        response->channels[channel_index].alignment = WLH_COPROC_OTA_ALIGNMENT;
+        ++channel_index;
+        response->initial_credits[credit_index].channel_id =
+            WLH_CHANNEL_OTA_STREAM;
+        response->initial_credits[credit_index].units =
+            WLH_COPROC_OTA_INITIAL_CREDIT;
+        response->initial_credits[credit_index].unit_bytes = 1u;
+        ++credit_index;
+        coproc->tx_credit[WLH_CHANNEL_OTA_STREAM] =
+            WLH_COPROC_OTA_INITIAL_CREDIT;
+    }
+
+    response->services_count = (pb_size_t)service_index;
+    response->channels_count = (pb_size_t)channel_index;
+    response->initial_credits_count = (pb_size_t)credit_index;
 
     /* Negotiation frames use session 0. The selected session takes effect only
        after the complete HelloResponse has been sent. */
@@ -184,6 +229,7 @@ WLH_NOINLINE wlh_coproc_result_t handle_hello_request(
     coproc->bluetooth_tx_inflight = 0u;
     coproc->bluetooth_adv_tx_inflight = 0u;
     coproc->bluetooth_hci_stopped = false;
+    ota_reset(coproc);
     result = send_hello_response(coproc, request->request_id);
     return result;
 }

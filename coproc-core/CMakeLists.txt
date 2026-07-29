@@ -24,6 +24,7 @@ add_library(wlh_coproc_core STATIC
   src/coproc_io.c
   src/coproc_kv.c
   src/coproc_link.c
+  src/coproc_ota.c
   src/coproc_rpc.c
   src/coproc_user_passthrough.c
   src/coproc_wifi.c
@@ -51,6 +52,7 @@ if(BUILD_TESTING)
     tests/test_coproc_bluetooth.c
     tests/test_coproc_device_user.c
     tests/test_coproc_link_data.c
+    tests/test_coproc_ota.c
     tests/test_coproc_peripherals.c
     tests/test_coproc_wifi.c)
   target_compile_features(wlh_coproc_core_tests PRIVATE c_std_11)

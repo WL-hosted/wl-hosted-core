@@ -29,6 +29,20 @@ extern "C" {
  * wlh_coproc_bluetooth_fatal_error(). */
 #define WLH_COPROC_BLUETOOTH_REASON_MALFORMED_HCI 1u
 
+/* OTA_STREAM chunking. stream_chunk_size is the largest firmware payload one
+ * OTA_STREAM record carries; it fits the max frame after the frame header, the
+ * 8-byte raw record header and the 16-byte OTA stream sub-header. alignment is
+ * the offset/size granularity the host must honour so the backend can write
+ * flash without a read-modify-write. The initial credit bounds how many chunks
+ * ride ahead of the flash writer: credit is returned only in write_complete,
+ * so the window equals the backend's receive queue depth. */
+#define WLH_COPROC_OTA_STREAM_HEADER_SIZE 16u
+#define WLH_COPROC_OTA_CHUNK_SIZE 4048u
+#define WLH_COPROC_OTA_ALIGNMENT 16u
+#define WLH_COPROC_OTA_INITIAL_CREDIT 4u
+/* OTA_STREAM record_type for a firmware data chunk. */
+#define WLH_COPROC_OTA_RECORD_TYPE 1u
+
 typedef enum wlh_coproc_result {
     WLH_COPROC_OK = 0,
     WLH_COPROC_INVALID_ARGUMENT = -1,
@@ -320,6 +334,63 @@ typedef struct wlh_coproc_bluetooth_info {
     uint32_t max_hci_packet;
 } wlh_coproc_bluetooth_info_t;
 
+/* OTA firmware update service (optional). BEGIN/FINALIZE/ABORT/ACTIVATE are
+ * nonblocking submissions correlated by operation_id; their outcome arrives via
+ * the matching wlh_coproc_ota_*_complete() ingress call. WRITE is driven by the
+ * OTA_STREAM channel and does not carry an operation_id: the core returns one
+ * unit of flow-control credit only once wlh_coproc_ota_write_complete() reports
+ * the chunk durably written, which paces the host to the flash write rate.
+ * QUERY is answered by the core from session state without a backend call. */
+typedef struct wlh_coproc_ota_begin_params {
+    uint32_t image_type;
+    uint64_t image_size;
+    uint8_t sha256[32];
+    char target_version[33];
+    char slot[17];
+    /* Valid only for the duration of the begin call; copy if retained. */
+    const uint8_t *signature;
+    size_t signature_size;
+} wlh_coproc_ota_begin_params_t;
+
+/* transfer_id is assigned by the core and is stable for the whole transfer.
+ * `data` in write points into the received frame and is valid only for the
+ * duration of the call; the backend must copy or enqueue it and return without
+ * blocking. All ops return 0 to accept the submission, nonzero to reject it. */
+typedef int (*wlh_coproc_ota_begin_fn)(
+    void *context,
+    uint32_t operation_id,
+    uint32_t transfer_id,
+    const wlh_coproc_ota_begin_params_t *params
+);
+typedef int (*wlh_coproc_ota_write_fn)(
+    void *context,
+    uint32_t transfer_id,
+    uint64_t offset,
+    const uint8_t *data,
+    size_t size
+);
+typedef int (*wlh_coproc_ota_finalize_fn)(
+    void *context,
+    uint32_t operation_id,
+    uint32_t transfer_id,
+    uint64_t bytes_sent
+);
+typedef int (*wlh_coproc_ota_abort_fn)(
+    void *context, uint32_t operation_id, uint32_t transfer_id
+);
+typedef int (*wlh_coproc_ota_activate_fn)(
+    void *context, uint32_t operation_id, uint32_t transfer_id, bool reboot
+);
+
+typedef struct wlh_coproc_ota_ops {
+    void *context;
+    wlh_coproc_ota_begin_fn begin;
+    wlh_coproc_ota_write_fn write;
+    wlh_coproc_ota_finalize_fn finalize;
+    wlh_coproc_ota_abort_fn abort;
+    wlh_coproc_ota_activate_fn activate;
+} wlh_coproc_ota_ops_t;
+
 typedef struct wlh_coproc_diagnostics {
     wlh_coproc_state_t state;
     uint32_t session_id;
@@ -347,6 +418,7 @@ typedef struct wlh_coproc_config {
     wlh_coproc_kv_ops_t kv;
     wlh_coproc_user_passthrough_ops_t user_passthrough;
     wlh_coproc_bluetooth_ops_t bluetooth;
+    wlh_coproc_ota_ops_t ota;
     wlh_coproc_buffer_ops_t buffers;
     wlh_osal_ops_t osal;
     uint32_t max_frame_size;
@@ -356,6 +428,10 @@ typedef struct wlh_coproc_config {
     uint8_t core_queue_depth;
     uint32_t stop_timeout_ms;
     wlh_osal_task_attributes_t core_task;
+    /* Reported in HelloResponse.implementation_version; empty falls back to a
+     * built-in default. Used by the host to confirm the running firmware after
+     * an OTA activation. */
+    char implementation_version[33];
 } wlh_coproc_config_t;
 
 typedef struct wlh_coproc {
@@ -400,6 +476,28 @@ typedef struct wlh_coproc {
      * back to the reliable channel when the peer predates the split. */
     bool bluetooth_adv_channel;
     bool bluetooth_hci_stopped;
+    /* OTA transfer state machine (wlh_protocol_v1_OtaState). A single transfer
+     * is in flight at a time; ota_pending correlates the outstanding
+     * BEGIN/FINALIZE/ABORT/ACTIVATE backend submission with its RPC request. */
+    struct {
+        bool active;
+        uint32_t operation_id;
+        uint32_t session_id;
+        uint32_t request_id;
+        uint16_t method_id;
+    } ota_pending;
+    uint32_t ota_state;
+    uint32_t ota_transfer_id;
+    uint32_t next_ota_transfer_id;
+    uint64_t ota_image_size;
+    /* Bytes handed to the backend; advances as chunks are accepted so the next
+     * chunk's offset can be validated while earlier writes are still in flight
+     * (up to the OTA_STREAM credit window). */
+    uint64_t ota_bytes_accepted;
+    /* Bytes the backend reported durably written; drives progress and QUERY. */
+    uint64_t ota_bytes_received;
+    uint64_t ota_progress_reported_bytes;
+    char ota_target_version[33];
 } wlh_coproc_t;
 
 typedef struct wlh_coproc_bss {
@@ -502,6 +600,32 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
 wlh_coproc_result_t wlh_coproc_bluetooth_fatal_error(
     wlh_coproc_t *coproc, uint32_t reason
 );
+
+/* OTA completions. All are nonblocking ingress callable from any task context;
+ * transfer_id must match the transfer the core assigned in the begin op.
+ * begin/finalize/abort/activate correlate by operation_id and answer the
+ * pending RPC. write reports one delivered chunk: on success the core returns a
+ * unit of OTA_STREAM credit and advances progress; on failure it fails the
+ * transfer. bytes_received is the cumulative durable byte count. */
+wlh_coproc_result_t wlh_coproc_ota_begin_complete(
+    wlh_coproc_t *coproc, uint32_t operation_id, int backend_status
+);
+wlh_coproc_result_t wlh_coproc_ota_write_complete(
+    wlh_coproc_t *coproc,
+    uint32_t transfer_id,
+    uint64_t bytes_received,
+    int backend_status
+);
+wlh_coproc_result_t wlh_coproc_ota_finalize_complete(
+    wlh_coproc_t *coproc, uint32_t operation_id, int backend_status
+);
+wlh_coproc_result_t wlh_coproc_ota_abort_complete(
+    wlh_coproc_t *coproc, uint32_t operation_id, int backend_status
+);
+wlh_coproc_result_t wlh_coproc_ota_activate_complete(
+    wlh_coproc_t *coproc, uint32_t operation_id, int backend_status
+);
+
 void wlh_coproc_get_diagnostics(
     const wlh_coproc_t *coproc, wlh_coproc_diagnostics_t *diagnostics
 );

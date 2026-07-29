@@ -292,6 +292,16 @@ static void host_worker(void *argument) {
                 host->config.buffers.free(
                     host->config.buffers.context, (uint8_t *)data
                 );
+            } else if (job.kind == WLH_HOST_JOB_OTA_TX) {
+                wlh_host_data_job_t *data = job.payload;
+                if (host->ota_tx_inflight > 0u)
+                    host->ota_tx_inflight--;
+                (void)send_payload_frame(
+                    host, data->channel, data->data, data->size, false
+                );
+                host->config.buffers.free(
+                    host->config.buffers.context, (uint8_t *)data
+                );
             } else if (job.kind == WLH_HOST_JOB_TRANSPORT_LOST) {
                 process_transport_lost(host);
             } else if (job.kind == WLH_HOST_JOB_TRANSPORT_STARTED) {

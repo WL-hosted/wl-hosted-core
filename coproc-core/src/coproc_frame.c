@@ -73,6 +73,18 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         return process_hci_frame(coproc, payload, payload_size);
     }
 
+    if (header.channel == WLH_CHANNEL_OTA_STREAM) {
+        if ((coproc->state != WLH_COPROC_STATE_READY &&
+             coproc->state != WLH_COPROC_STATE_CONGESTED) ||
+            header.session_id != coproc->session_id) {
+            return WLH_COPROC_INVALID_STATE;
+        }
+        /* Credit for this frame is returned inside process_ota_frame: either
+           immediately when the chunk is rejected, or from write_complete once
+           the accepted chunk is durably written. */
+        return process_ota_frame(coproc, payload, payload_size);
+    }
+
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
         header.channel == WLH_CHANNEL_ETHERNET_AP) {
         bool payload_valid = payload_size != 0u;

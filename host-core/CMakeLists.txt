@@ -25,6 +25,7 @@ add_library(wlh_host_core STATIC
     src/host_io.c
     src/host_kv.c
     src/host_link.c
+    src/host_ota.c
     src/host_rpc.c
     src/host_user_passthrough.c
     src/host_wire.c

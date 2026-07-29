@@ -11,5 +11,10 @@ void test_large_message_allocation_failures(void);
 void test_bluetooth_lifecycle_and_info(void);
 void test_bluetooth_hci(void);
 void test_bluetooth_adv_channel(void);
+void test_ota_hello_advertisement(void);
+void test_ota_hello_with_bluetooth(void);
+void test_ota_full_flow(void);
+void test_ota_errors_idle(void);
+void test_ota_transfer_errors(void);
 
 #endif
