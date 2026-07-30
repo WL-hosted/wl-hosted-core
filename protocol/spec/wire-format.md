@@ -21,7 +21,7 @@ v1 Header 固定为 24 字节：
 | 16 | 4 | header_checksum | 校验 24 字节 Header，计算时本字段置 0 |
 | 20 | 4 | payload_checksum | 校验 payload |
 
-`CRC32C_PRESENT` 置位时，`header_checksum` 和 `payload_checksum` 使用 CRC-32C Castagnoli；未置位时使用无符号 32 位累加和（SUM32）。SUM32 初值为 0，按字节依次累加并在 `2^32` 上回绕；不使用反转、补码或其他变换。两种算法计算时都将 `header_checksum` 字段置 0。Coprocessor 必须实现 CRC32C 和 SUM32；默认使用 SUM32。`payload_size` 不得超过协商的 `max_frame_size - header_size`。
+`CRC32C_PRESENT` 置位时，`header_checksum` 和 `payload_checksum` 使用 CRC-32C Castagnoli；未置位时使用无符号 32 位累加和（SUM32）。SUM32 初值为 0，将数据按 little-endian 依次取 32 位字累加并在 `2^32` 上回绕；末尾不足 4 字节时按 little-endian 取值、高位字节补 0 后累加；不使用反转、补码或其他变换。两种算法计算时都将 `header_checksum` 字段置 0。Coprocessor 必须实现 CRC32C 和 SUM32；默认使用 SUM32。`payload_size` 不得超过协商的 `max_frame_size - header_size`。
 
 ## Channel ID
 

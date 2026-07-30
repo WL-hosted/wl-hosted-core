@@ -159,13 +159,32 @@ void wlh_frame_header_init(wlh_frame_header_t *header, uint8_t channel) {
 
 uint32_t wlh_sum32(const uint8_t *data, size_t size) {
     uint32_t sum = 0;
-    size_t i;
+    size_t i = 0;
 
     if (data == NULL && size != 0u) {
         return 0;
     }
-    for (i = 0; i < size; ++i) {
-        sum += data[i];
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) &&             \
+    __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    for (; size - i >= 4u; i += 4u) {
+        uint32_t word;
+        memcpy(&word, data + i, sizeof(word));
+        sum += word;
+    }
+#else
+    for (; size - i >= 4u; i += 4u) {
+        sum += (uint32_t)data[i] | ((uint32_t)data[i + 1u] << 8) |
+               ((uint32_t)data[i + 2u] << 16) | ((uint32_t)data[i + 3u] << 24);
+    }
+#endif
+    if (i < size) {
+        uint32_t tail = 0;
+        unsigned shift = 0;
+        for (; i < size; ++i) {
+            tail |= (uint32_t)data[i] << shift;
+            shift += 8u;
+        }
+        sum += tail;
     }
     return sum;
 }

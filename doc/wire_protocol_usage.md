@@ -63,7 +63,7 @@ if (header.channel == WLH_CHANNEL_CONTROL_RPC) {
 
 Frame 支持两种校验：
 
-- **SUM32**：无符号 32 位累加和，计算时 `header_checksum` 字段置 0。
+- **SUM32**：按 little-endian 32 位字累加（末尾不足 4 字节高位补 0），计算时 `header_checksum` 字段置 0。
 - **CRC32C**：Castagnoli 多项式。
 
 标志位 `WLH_FRAME_FLAG_CRC32C_PRESENT` 决定是否使用 CRC32C。默认使用 SUM32；CRC32C 能力在 Hello 中协商。

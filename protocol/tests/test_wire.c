@@ -25,7 +25,7 @@ static int failures;
 static const uint8_t sum_frame_golden[] = {
     0x57, 0x4c, 0x01, 0x18, 0x01, 0x00, 0x04, 0x00,
     0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55,
-    0x60, 0x03, 0x00, 0x00, 0x38, 0x03, 0x00, 0x00,
+    0x02, 0xa5, 0x4c, 0x6e, 0xde, 0xad, 0xbe, 0xef,
     0xde, 0xad, 0xbe, 0xef
 };
 
@@ -50,6 +50,7 @@ static void test_endian_and_checksums(void) {
     int16_t i16 = 0;
     uint32_t u32 = 0;
     static const uint8_t sum_data[] = {0xff, 0x02};
+    static const uint8_t tail_data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
     static const uint8_t crc_data[] = "123456789";
 
     CHECK(wlh_write_u16_le(bytes, sizeof(bytes), UINT16_C(0xabcd)) == 0);
@@ -68,8 +69,13 @@ static void test_endian_and_checksums(void) {
     CHECK(wlh_read_u16_le(bytes, 2, NULL) != 0);
     CHECK(wlh_write_u32_le(NULL, 4, 0) != 0);
 
-    CHECK(wlh_sum32(sum_data, sizeof(sum_data)) == UINT32_C(0x101));
+    CHECK(wlh_sum32(sum_data, sizeof(sum_data)) == UINT32_C(0x2ff));
     CHECK(wlh_sum32(NULL, 0) == 0);
+    CHECK(wlh_sum32(tail_data, 1) == UINT32_C(0x01));
+    CHECK(wlh_sum32(tail_data, 2) == UINT32_C(0x0201));
+    CHECK(wlh_sum32(tail_data, 3) == UINT32_C(0x030201));
+    CHECK(wlh_sum32(tail_data, 4) == UINT32_C(0x04030201));
+    CHECK(wlh_sum32(tail_data, 5) == UINT32_C(0x04030206));
     CHECK(wlh_crc32c(crc_data, sizeof(crc_data) - 1) == UINT32_C(0xe3069283));
     CHECK(wlh_crc32c(NULL, 0) == 0);
 }
@@ -123,8 +129,8 @@ static void test_frame_golden(void) {
         WLH_WIRE_OK
     );
     CHECK(decoded.payload_size == sizeof(sum_payload));
-    CHECK(decoded.header_checksum == UINT32_C(0x360));
-    CHECK(decoded.payload_checksum == UINT32_C(0x338));
+    CHECK(decoded.header_checksum == UINT32_C(0x6e4ca502));
+    CHECK(decoded.payload_checksum == UINT32_C(0xefbeadde));
     CHECK(payload_size == sizeof(sum_payload));
     CHECK(memcmp(payload, sum_payload, payload_size) == 0);
 
