@@ -345,7 +345,20 @@ void test_hello_wifi_and_ethernet(void) {
                     &core, COPROC_JOB_ETHERNET_TX, second_job, WLH_OSAL_NO_WAIT
                 ) == 0
             );
-            core.ethernet_tx_jobs_pending += 2u;
+            CHECK(
+                config.osal.semaphore_take(
+                    config.osal.context,
+                    &core.ethernet_tx_slots,
+                    WLH_OSAL_NO_WAIT
+                ) == 0
+            );
+            CHECK(
+                config.osal.semaphore_take(
+                    config.osal.context,
+                    &core.ethernet_tx_slots,
+                    WLH_OSAL_NO_WAIT
+                ) == 0
+            );
             config.osal.mutex_unlock(config.osal.context, &core.state_mutex);
 
             wait_for_sent(&f, sent_before + 1u);
@@ -379,7 +392,29 @@ void test_hello_wifi_and_ethernet(void) {
             CHECK(
                 wlh_raw_record_iterator_next(&iterator, &record) == WLH_WIRE_END
             );
-            CHECK(core.ethernet_tx_jobs_pending == 0u);
+            for (unsigned slot = 0u; slot < 4u; ++slot) {
+                CHECK(
+                    config.osal.semaphore_take(
+                        config.osal.context,
+                        &core.ethernet_tx_slots,
+                        WLH_OSAL_NO_WAIT
+                    ) == 0
+                );
+            }
+            CHECK(
+                config.osal.semaphore_take(
+                    config.osal.context,
+                    &core.ethernet_tx_slots,
+                    WLH_OSAL_NO_WAIT
+                ) != 0
+            );
+            for (unsigned slot = 0u; slot < 4u; ++slot) {
+                CHECK(
+                    config.osal.semaphore_give(
+                        config.osal.context, &core.ethernet_tx_slots
+                    ) == 0
+                );
+            }
         } else {
             if (first_job != NULL)
                 config.buffers.free(

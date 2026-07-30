@@ -169,8 +169,9 @@ static coproc_data_job_t *aggregate_ethernet_jobs(
         }
         memcpy(data->data + data->size, candidate->data, candidate->size);
         data->size += candidate->size;
-        if (coproc->ethernet_tx_jobs_pending > 0u)
-            --coproc->ethernet_tx_jobs_pending;
+        (void)coproc->config.osal.semaphore_give(
+            coproc->config.osal.context, &coproc->ethernet_tx_slots
+        );
         coproc->config.buffers.free(
             coproc->config.buffers.context, (uint8_t *)candidate
         );
@@ -279,14 +280,20 @@ static void coproc_worker(void *argument) {
                 );
             } else if (job.kind == COPROC_JOB_ETHERNET_TX) {
                 coproc_data_job_t *data = job.payload;
+                wlh_coproc_result_t result;
                 data = aggregate_ethernet_jobs(
                     coproc, data, &deferred_job, &has_deferred_job
                 );
-                if (coproc->ethernet_tx_jobs_pending > 0u)
-                    --coproc->ethernet_tx_jobs_pending;
-                (void)send_payload(
-                    coproc, data->channel, data->data, data->size
-                );
+                result =
+                    send_payload(coproc, data->channel, data->data, data->size);
+                /* The initial record owns one end-to-end pipeline slot until
+                 * the transport completion callback. Synchronous admission
+                 * failure leaves no completion to release it. */
+                if (result != WLH_COPROC_OK) {
+                    (void)coproc->config.osal.semaphore_give(
+                        coproc->config.osal.context, &coproc->ethernet_tx_slots
+                    );
+                }
                 coproc->config.buffers.free(
                     coproc->config.buffers.context, (uint8_t *)data
                 );
@@ -405,6 +412,16 @@ wlh_coproc_result_t wlh_coproc_init(
         coproc->config.core_queue_depth = 16u;
     if (coproc->config.core_queue_depth > WLH_COPROC_MAX_QUEUE_DEPTH)
         return WLH_COPROC_INVALID_ARGUMENT;
+    if (coproc->config.ethernet_tx_depth == 0u) {
+        coproc->config.ethernet_tx_depth =
+            coproc->config.core_queue_depth > WLH_COPROC_CONTROL_QUEUE_RESERVE
+                ? (uint8_t)(coproc->config.core_queue_depth -
+                            WLH_COPROC_CONTROL_QUEUE_RESERVE)
+                : 1u;
+    }
+    if (coproc->config.ethernet_tx_depth > coproc->config.core_queue_depth) {
+        return WLH_COPROC_INVALID_ARGUMENT;
+    }
     if (coproc->config.stop_timeout_ms == 0u)
         coproc->config.stop_timeout_ms = 3000u;
     coproc->next_session_id =
@@ -417,6 +434,7 @@ wlh_coproc_result_t wlh_coproc_init(
 
 wlh_coproc_result_t wlh_coproc_start(wlh_coproc_t *coproc) {
     wlh_osal_task_attributes_t attributes;
+    uint16_t ethernet_slots;
     if (coproc == NULL || coproc->state != WLH_COPROC_STATE_STOPPED) {
         return WLH_COPROC_INVALID_STATE;
     }
@@ -437,6 +455,21 @@ wlh_coproc_result_t wlh_coproc_start(wlh_coproc_t *coproc) {
         );
         return WLH_COPROC_INVALID_STATE;
     }
+    ethernet_slots = coproc->config.ethernet_tx_depth;
+    if (coproc->config.osal.semaphore_create(
+            coproc->config.osal.context,
+            &coproc->ethernet_tx_slots,
+            ethernet_slots,
+            ethernet_slots
+        ) != 0) {
+        coproc->config.osal.queue_destroy(
+            coproc->config.osal.context, &coproc->core_queue
+        );
+        coproc->config.osal.mutex_destroy(
+            coproc->config.osal.context, &coproc->state_mutex
+        );
+        return WLH_COPROC_INVALID_STATE;
+    }
     coproc->worker_stopping = false;
     coproc->worker_started = true;
     attributes = coproc->config.core_task;
@@ -452,6 +485,9 @@ wlh_coproc_result_t wlh_coproc_start(wlh_coproc_t *coproc) {
         coproc->worker_started = false;
         coproc->config.osal.queue_destroy(
             coproc->config.osal.context, &coproc->core_queue
+        );
+        coproc->config.osal.semaphore_destroy(
+            coproc->config.osal.context, &coproc->ethernet_tx_slots
         );
         coproc->config.osal.mutex_destroy(
             coproc->config.osal.context, &coproc->state_mutex
@@ -477,6 +513,9 @@ wlh_coproc_result_t wlh_coproc_stop(wlh_coproc_t *coproc) {
     coproc->worker_started = false;
     coproc->config.osal.queue_destroy(
         coproc->config.osal.context, &coproc->core_queue
+    );
+    coproc->config.osal.semaphore_destroy(
+        coproc->config.osal.context, &coproc->ethernet_tx_slots
     );
     coproc->config.osal.mutex_destroy(
         coproc->config.osal.context, &coproc->state_mutex

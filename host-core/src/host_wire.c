@@ -15,8 +15,15 @@ static void tx_complete(
     void *completion_context, uint8_t *frame, size_t size, int status
 ) {
     wlh_host_t *host = completion_context;
-    (void)size;
+    bool ethernet_frame = size >= WLH_FRAME_HEADER_SIZE &&
+                          (frame[4] == WLH_CHANNEL_ETHERNET_STA ||
+                           frame[4] == WLH_CHANNEL_ETHERNET_AP);
     host->config.buffers.free(host->config.buffers.context, frame);
+    if (ethernet_frame) {
+        (void)host->config.osal.semaphore_give(
+            host->config.osal.context, &host->ethernet_tx_slots
+        );
+    }
     if (status != 0)
         wlh_host_transport_lost(host);
 }
@@ -69,7 +76,7 @@ wlh_host_result_t send_payload_frame(
         channel == WLH_CHANNEL_LINK_CONTROL && host->session_id == 0u
             ? 0u
             : host->session_id;
-    header.sequence = host->tx_sequence[channel]++;
+    header.sequence = host->tx_sequence[channel];
     if (wlh_frame_encode(
             frame, frame_size, &encoded_size, &header, payload, payload_size
         ) != WLH_WIRE_OK) {
@@ -86,6 +93,7 @@ wlh_host_result_t send_payload_frame(
         host->config.buffers.free(host->config.buffers.context, frame);
         return WLH_HOST_TRANSPORT_ERROR;
     }
+    ++host->tx_sequence[channel];
     if (!reserved) {
         host->tx_credit[channel]--;
     }

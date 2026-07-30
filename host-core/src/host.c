@@ -215,6 +215,7 @@ void set_state(wlh_host_t *host, wlh_host_state_t state) {
 static void host_worker(void *argument) {
     wlh_host_t *host = argument;
     wlh_host_job_t job;
+    uint32_t ethernet_transport_failures = 0u;
     (void)host->config.osal.mutex_lock(
         host->config.osal.context, &host->state_mutex, WLH_OSAL_WAIT_FOREVER
     );
@@ -284,7 +285,17 @@ static void host_worker(void *argument) {
                 result = send_payload_frame(
                     host, data->channel, data->data, data->size, false
                 );
-                if (result != WLH_HOST_OK)
+                if (result != WLH_HOST_OK) {
+                    (void)host->config.osal.semaphore_give(
+                        host->config.osal.context, &host->ethernet_tx_slots
+                    );
+                }
+                if (result != WLH_HOST_OK) {
+                    ++ethernet_transport_failures;
+                }
+                if (result != WLH_HOST_OK &&
+                    (ethernet_transport_failures <= 5u ||
+                     ethernet_transport_failures % 100u == 0u))
                     WLH_LOGW(
                         "wlh_host",
                         "ethernet TX failed channel=%u result=%d credit=%lu",
@@ -379,6 +390,8 @@ wlh_host_result_t wlh_host_init(
         host->config.core_queue_depth = 16u;
     if (host->config.core_queue_depth > WLH_HOST_MAX_QUEUE_DEPTH)
         return WLH_HOST_INVALID_ARGUMENT;
+    if (host->config.ethernet_tx_depth == 0u)
+        host->config.ethernet_tx_depth = host->config.core_queue_depth;
     if (host->config.stop_timeout_ms == 0u)
         host->config.stop_timeout_ms = 3000u;
     host->state = WLH_HOST_STATE_UNINITIALIZED;
@@ -408,6 +421,20 @@ wlh_host_result_t wlh_host_start(wlh_host_t *host) {
         );
         return WLH_HOST_INVALID_STATE;
     }
+    if (host->config.osal.semaphore_create(
+            host->config.osal.context,
+            &host->ethernet_tx_slots,
+            host->config.ethernet_tx_depth,
+            host->config.ethernet_tx_depth
+        ) != 0) {
+        host->config.osal.queue_destroy(
+            host->config.osal.context, &host->core_queue
+        );
+        host->config.osal.mutex_destroy(
+            host->config.osal.context, &host->state_mutex
+        );
+        return WLH_HOST_INVALID_STATE;
+    }
     host->worker_stopping = false;
     host->worker_started = true;
     attributes = host->config.core_task;
@@ -423,6 +450,9 @@ wlh_host_result_t wlh_host_start(wlh_host_t *host) {
         host->worker_started = false;
         host->config.osal.queue_destroy(
             host->config.osal.context, &host->core_queue
+        );
+        host->config.osal.semaphore_destroy(
+            host->config.osal.context, &host->ethernet_tx_slots
         );
         host->config.osal.mutex_destroy(
             host->config.osal.context, &host->state_mutex
@@ -449,6 +479,9 @@ wlh_host_result_t wlh_host_stop(wlh_host_t *host) {
     host->worker_started = false;
     host->config.osal.queue_destroy(
         host->config.osal.context, &host->core_queue
+    );
+    host->config.osal.semaphore_destroy(
+        host->config.osal.context, &host->ethernet_tx_slots
     );
     host->config.osal.mutex_destroy(
         host->config.osal.context, &host->state_mutex

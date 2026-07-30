@@ -65,6 +65,10 @@ typedef enum wlh_coproc_state {
 typedef void (*wlh_coproc_tx_complete_fn)(
     void *completion_context, uint8_t *frame, size_t size, int status
 );
+
+/* Completion status for queued frames cancelled by a transport reset. The
+ * reset callback is the single authority that restarts the Core session. */
+#define WLH_COPROC_TX_CANCELLED 1
 typedef int (*wlh_coproc_submit_tx_fn)(
     void *context,
     uint8_t *frame,
@@ -426,6 +430,10 @@ typedef struct wlh_coproc_config {
     uint32_t initial_credit;
     uint32_t initial_session_id;
     uint8_t core_queue_depth;
+    /* Maximum Ethernet frames admitted across the Core and transport. Zero
+     * derives the limit from core_queue_depth for backward compatibility.
+     * Adapters should set this to their bounded TX capacity. */
+    uint8_t ethernet_tx_depth;
     uint32_t stop_timeout_ms;
     wlh_osal_task_attributes_t core_task;
     /* Reported in HelloResponse.implementation_version; empty falls back to a
@@ -452,8 +460,9 @@ typedef struct wlh_coproc {
     uintptr_t core_queue_storage[WLH_COPROC_MAX_QUEUE_DEPTH * 2u];
     /* Ethernet RX is lossy by design under congestion. Keep its queued work
      * below the core queue capacity so control RPCs and completion events can
-     * always make progress. Protected by state_mutex. */
-    uint8_t ethernet_tx_jobs_pending;
+     * always make progress. A counting semaphore reserves slots without
+     * making the Wi-Fi callback contend on state_mutex. */
+    wlh_osal_semaphore_t ethernet_tx_slots;
     bool worker_started;
     bool worker_stopping;
     uint32_t next_backend_operation_id;

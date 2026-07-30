@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -212,29 +213,38 @@ static void stub_destroy(void *ctx, void *object) {
 static int stub_sem_create(
     void *c, wlh_osal_semaphore_t *s, uint32_t i, uint32_t m
 ) {
+    _Atomic uint32_t *values = (_Atomic uint32_t *)s;
     (void)c;
-    (void)s;
-    (void)i;
-    (void)m;
+    atomic_store(&values[0], i);
+    atomic_store(&values[1], m);
     return 0;
 }
 static int stub_sem_take(void *c, wlh_osal_semaphore_t *s, uint32_t t) {
+    _Atomic uint32_t *values = (_Atomic uint32_t *)s;
+    uint32_t count = atomic_load(&values[0]);
     (void)c;
-    (void)s;
     (void)t;
+    while (count != 0u) {
+        if (atomic_compare_exchange_weak(&values[0], &count, count - 1u))
+            return 0;
+    }
     return -1;
 }
 static int stub_sem_give(void *c, wlh_osal_semaphore_t *s) {
+    _Atomic uint32_t *values = (_Atomic uint32_t *)s;
+    uint32_t count = atomic_load(&values[0]);
+    uint32_t maximum = atomic_load(&values[1]);
     (void)c;
-    (void)s;
-    return 0;
+    while (count < maximum) {
+        if (atomic_compare_exchange_weak(&values[0], &count, count + 1u))
+            return 0;
+    }
+    return -1;
 }
 static int stub_sem_give_isr(void *c, wlh_osal_semaphore_t *s, bool *w) {
-    (void)c;
-    (void)s;
     if (w)
         *w = false;
-    return 0;
+    return stub_sem_give(c, s);
 }
 static int stub_event_wait(
     void *c,

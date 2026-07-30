@@ -220,6 +220,9 @@ typedef struct wlh_host_config {
     uint32_t heartbeat_timeout_ms;
     uint8_t max_pending_rpc;
     uint8_t core_queue_depth;
+    /* Maximum Ethernet frames admitted across the Core and transport. Zero
+     * derives the limit from core_queue_depth for backward compatibility. */
+    uint8_t ethernet_tx_depth;
     uint32_t stop_timeout_ms;
     wlh_osal_task_attributes_t core_task;
 } wlh_host_config_t;
@@ -290,6 +293,7 @@ typedef struct wlh_host {
     wlh_osal_task_t core_task;
     wlh_osal_queue_t core_queue;
     wlh_osal_mutex_t state_mutex;
+    wlh_osal_semaphore_t ethernet_tx_slots;
     uintptr_t core_queue_storage[WLH_HOST_MAX_QUEUE_DEPTH * 2u];
     bool worker_started;
     bool worker_stopping;

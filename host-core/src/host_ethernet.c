@@ -26,12 +26,22 @@ static wlh_host_result_t ethernet_send(
     if (host == NULL || ethernet_frame == NULL || size == 0u || size > 1600u ||
         !host->worker_started)
         return WLH_HOST_INVALID_ARGUMENT;
+    if (host->config.osal.semaphore_take(
+            host->config.osal.context,
+            &host->ethernet_tx_slots,
+            WLH_OSAL_NO_WAIT
+        ) != 0)
+        return WLH_HOST_PENDING_FULL;
     ethernet_index = channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
     record = host->config.buffers.alloc(
         host->config.buffers.context, sizeof(wlh_host_data_job_t) + 8u + size
     );
-    if (record == NULL)
+    if (record == NULL) {
+        (void)host->config.osal.semaphore_give(
+            host->config.osal.context, &host->ethernet_tx_slots
+        );
         return WLH_HOST_NO_MEMORY;
+    }
     {
         wlh_host_data_job_t *job = (wlh_host_data_job_t *)record;
         size_t record_size = 0;
@@ -41,6 +51,9 @@ static wlh_host_result_t ethernet_send(
             ) != WLH_WIRE_OK) {
             host->config.buffers.free(
                 host->config.buffers.context, (uint8_t *)job
+            );
+            (void)host->config.osal.semaphore_give(
+                host->config.osal.context, &host->ethernet_tx_slots
             );
             return WLH_HOST_INVALID_ARGUMENT;
         }
@@ -57,6 +70,9 @@ static wlh_host_result_t ethernet_send(
             ) != 0) {
             host->config.buffers.free(
                 host->config.buffers.context, (uint8_t *)job
+            );
+            (void)host->config.osal.semaphore_give(
+                host->config.osal.context, &host->ethernet_tx_slots
             );
             return WLH_HOST_PENDING_FULL;
         }
@@ -90,6 +106,9 @@ static wlh_host_result_t ethernet_send(
             );
             host->config.buffers.free(
                 host->config.buffers.context, (uint8_t *)job
+            );
+            (void)host->config.osal.semaphore_give(
+                host->config.osal.context, &host->ethernet_tx_slots
             );
             return WLH_HOST_NO_CREDIT;
         }
