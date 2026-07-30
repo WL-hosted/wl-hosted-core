@@ -91,6 +91,7 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         wlh_raw_record_iterator_t iterator;
         wlh_raw_record_view_t record;
         wlh_wire_result_t record_result = WLH_WIRE_INVALID_ARGUMENT;
+        uint32_t record_units = 0u;
 
         /* Validate every aggregated record before delivering any of them,
            so a malformed tail cannot partially deliver a frame. */
@@ -100,6 +101,7 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
             while ((record_result =
                         wlh_raw_record_iterator_next(&iterator, &record)) ==
                    WLH_WIRE_OK) {
+                ++record_units;
             }
         }
         payload_valid = payload_valid && record_result == WLH_WIRE_END;
@@ -131,8 +133,15 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
             );
         }
         /* Return the credit even when the payload is rejected, so a transient
-           fault cannot permanently strand the peer in CONGESTED. */
-        (void)send_credit_update(coproc, header.channel);
+           fault cannot permanently strand the peer in CONGESTED. The peer
+           charges one unit per raw record, so an aggregated frame must return
+           one unit per record; returning a single unit per frame leaks
+           record_units-1 credits and eventually stalls the channel. A
+           malformed payload yields no trustworthy record count, so fall back
+           to one unit rather than a value derived from a bad parse. */
+        (void)send_credit_update(
+            coproc, header.channel, payload_valid ? record_units : 1u
+        );
         return payload_valid ? WLH_COPROC_OK : WLH_COPROC_PROTOCOL_ERROR;
     }
 

@@ -14,7 +14,7 @@ extern "C" {
 
 #define WLH_COPROC_CHANNEL_COUNT 256u
 #define WLH_COPROC_MAX_FRAME_SIZE 4096u
-#define WLH_COPROC_MAX_QUEUE_DEPTH 32u
+#define WLH_COPROC_MAX_QUEUE_DEPTH 64u
 #define WLH_COPROC_MAX_HCI_PACKET 1024u
 #define WLH_COPROC_BLUETOOTH_INITIAL_CREDIT 16u
 /* Window for best-effort LE advertising reports on

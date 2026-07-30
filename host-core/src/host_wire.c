@@ -158,17 +158,21 @@ wlh_host_result_t send_rpc_message(
     return result;
 }
 
-wlh_host_result_t send_credit_update(wlh_host_t *host, uint8_t channel) {
+wlh_host_result_t send_credit_update(
+    wlh_host_t *host, uint8_t channel, uint32_t units
+) {
     wlh_rpc_envelope_t envelope;
     wlh_protocol_v1_CreditUpdate update =
         wlh_protocol_v1_CreditUpdate_init_zero;
 
+    if (units == 0u)
+        return WLH_HOST_OK;
     memset(&envelope, 0, sizeof(envelope));
     envelope.service_id = WLH_SERVICE_LINK;
     envelope.method_id = WLH_LINK_METHOD_CREDIT_UPDATE;
     envelope.kind = WLH_RPC_KIND_EVENT;
     update.channel_id = channel;
-    update.units = 1u;
+    update.units = units;
     return send_rpc_message(
         host, &envelope, wlh_protocol_v1_CreditUpdate_fields, &update, true
     );

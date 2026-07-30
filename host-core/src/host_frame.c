@@ -90,6 +90,7 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
         wlh_raw_record_view_t record;
         wlh_wire_result_t record_result = WLH_WIRE_INVALID_ARGUMENT;
         wlh_host_result_t credit_result;
+        uint32_t record_units = 0u;
 
         /* Validate every aggregated record before dispatching any of them,
            so a malformed tail cannot partially deliver a frame. */
@@ -99,6 +100,7 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
             while ((record_result =
                         wlh_raw_record_iterator_next(&iterator, &record)) ==
                    WLH_WIRE_OK) {
+                ++record_units;
             }
         }
         payload_valid = payload_valid && record_result == WLH_WIRE_END;
@@ -125,10 +127,17 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
                 }
             }
         }
-        /* Return the credit even when the payload is rejected. The peer spent
-           one credit to deliver this frame; withholding it on a drop turns a
-           transient fault into a permanent CONGESTED stall. */
-        credit_result = send_credit_update(host, header.channel);
+        /* Return the credit even when the payload is rejected. Withholding it
+           on a drop turns a transient fault into a permanent CONGESTED stall.
+           The peer charges one unit per raw record, so an aggregated frame
+           must return one unit per record; the coprocessor aggregates on this
+           path, so returning a single unit per frame leaks record_units-1
+           credits per frame and drains the channel monotonically. A malformed
+           payload yields no trustworthy record count, so fall back to one
+           unit rather than a value derived from a bad parse. */
+        credit_result = send_credit_update(
+            host, header.channel, payload_valid ? record_units : 1u
+        );
         if (credit_result != WLH_HOST_OK) {
             WLH_LOGW(
                 "wlh_host",

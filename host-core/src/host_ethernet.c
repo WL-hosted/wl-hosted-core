@@ -60,20 +60,29 @@ static wlh_host_result_t ethernet_send(
             );
             return WLH_HOST_PENDING_FULL;
         }
-        if (host->tx_credit[channel] <=
-                host->ethernet_tx_queued[ethernet_index] ||
+        bool no_credit = host->tx_credit[channel] <=
+                         host->ethernet_tx_queued[ethernet_index];
+        /* Keep this nonblocking: the worker that drains the queue contends for
+         * the same state_mutex held here, so waiting would deadlock progress
+         * rather than create it. Drops are counted so they stay visible. */
+        if (no_credit ||
             enqueue_job(
                 host, WLH_HOST_JOB_ETHERNET_TX, job, WLH_OSAL_NO_WAIT
             ) != 0) {
+            if (no_credit)
+                ++host->diagnostics.ethernet_no_credit;
+            else
+                ++host->diagnostics.ethernet_queue_full;
             ++admission_denials;
             if (admission_denials <= 5u || admission_denials % 100u == 0u) {
                 WLH_LOGW(
                     "wlh_host",
                     "ethernet admission denied channel=%u credit=%lu "
-                    "queued=%lu",
+                    "queued=%lu cause=%s",
                     (unsigned)channel,
                     (unsigned long)host->tx_credit[channel],
-                    (unsigned long)host->ethernet_tx_queued[ethernet_index]
+                    (unsigned long)host->ethernet_tx_queued[ethernet_index],
+                    no_credit ? "no_credit" : "queue_full"
                 );
             }
             host->config.osal.mutex_unlock(

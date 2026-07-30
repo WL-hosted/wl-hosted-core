@@ -213,12 +213,16 @@ WLH_NOINLINE wlh_coproc_result_t send_rpc_message(
     return result;
 }
 
-wlh_coproc_result_t send_credit_update(wlh_coproc_t *coproc, uint8_t channel) {
+wlh_coproc_result_t send_credit_update(
+    wlh_coproc_t *coproc, uint8_t channel, uint32_t units
+) {
     wlh_protocol_v1_CreditUpdate update =
         wlh_protocol_v1_CreditUpdate_init_zero;
 
+    if (units == 0u)
+        return WLH_COPROC_OK;
     update.channel_id = channel;
-    update.units = 1u;
+    update.units = units;
     return send_rpc_message(
         coproc,
         WLH_SERVICE_LINK,

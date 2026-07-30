@@ -415,7 +415,7 @@ WLH_NOINLINE wlh_coproc_result_t process_hci_frame(
             return WLH_COPROC_BACKEND_ERROR;
         }
     }
-    return send_credit_update(coproc, WLH_CHANNEL_BLUETOOTH_HCI);
+    return send_credit_update(coproc, WLH_CHANNEL_BLUETOOTH_HCI, 1u);
 }
 
 wlh_coproc_result_t wlh_coproc_bluetooth_operation_complete(

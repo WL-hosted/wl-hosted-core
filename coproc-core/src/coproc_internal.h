@@ -145,8 +145,11 @@ wlh_coproc_result_t wlh_coproc_internal_send_rpc_message(
     const pb_msgdesc_t *fields,
     const void *message
 );
+/* units must equal the number of credit units the peer spent to deliver the
+ * frame being acknowledged. Ethernet channels charge one unit per raw record,
+ * so an aggregated frame carrying N records must return N units. */
 wlh_coproc_result_t wlh_coproc_internal_send_credit_update(
-    wlh_coproc_t *coproc, uint8_t channel
+    wlh_coproc_t *coproc, uint8_t channel, uint32_t units
 );
 wlh_coproc_result_t wlh_coproc_internal_send_status(
     wlh_coproc_t *coproc, const wlh_rpc_envelope_t *request, int status

@@ -19,7 +19,7 @@ extern "C" {
 #define WLH_HOST_MAX_USER_PAYLOAD_SIZE 512u
 #define WLH_HOST_MAX_KV_KEY_SIZE 64u
 #define WLH_HOST_MAX_KV_VALUE_SIZE 512u
-#define WLH_HOST_MAX_QUEUE_DEPTH 32u
+#define WLH_HOST_MAX_QUEUE_DEPTH 64u
 #define WLH_HOST_MAX_HCI_PACKET 1024u
 
 typedef enum wlh_host_result {
@@ -238,6 +238,11 @@ typedef struct wlh_host_diagnostics {
     uint32_t buffer_allocation_failures;
     uint32_t hci_malformed;
     uint32_t hci_drops;
+    /* Ethernet frames refused before reaching the transport, split by cause.
+     * ethernet_no_credit is the flow-control window running dry;
+     * ethernet_queue_full is the core queue being saturated. */
+    uint32_t ethernet_no_credit;
+    uint32_t ethernet_queue_full;
     uint64_t last_peer_activity_ms;
 } wlh_host_diagnostics_t;
 

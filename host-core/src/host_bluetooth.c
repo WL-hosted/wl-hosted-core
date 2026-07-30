@@ -414,7 +414,7 @@ WLH_NOINLINE wlh_host_result_t process_hci_frame(
             "HCI rx dropped by adapter on channel %u",
             (unsigned)channel
         );
-    if (send_credit_update(host, channel) != WLH_HOST_OK)
+    if (send_credit_update(host, channel, 1u) != WLH_HOST_OK)
         WLH_LOGW("wlh_host", "HCI credit update failed");
     return delivered ? WLH_HOST_OK : WLH_HOST_PENDING_FULL;
 }

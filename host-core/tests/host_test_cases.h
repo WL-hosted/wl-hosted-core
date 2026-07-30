@@ -4,6 +4,7 @@
 void test_handshake_and_rpc(void);
 void test_timeout_credit_and_session(void);
 void test_ap_ethernet(void);
+void test_ethernet_aggregated_credit_accounting(void);
 void test_asynchronous_transport_start(void);
 void test_device_info_and_user_passthrough(void);
 void test_io_adc_kv_clients(void);

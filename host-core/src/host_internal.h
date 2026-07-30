@@ -116,8 +116,11 @@ wlh_host_result_t wlh_host_internal_send_rpc_message(
     const void *message,
     bool reserved
 );
+/* units must equal the number of credit units the peer spent to deliver the
+ * frame being acknowledged. Ethernet channels charge one unit per raw record,
+ * so an aggregated frame carrying N records must return N units. */
 wlh_host_result_t wlh_host_internal_send_credit_update(
-    wlh_host_t *host, uint8_t channel
+    wlh_host_t *host, uint8_t channel, uint32_t units
 );
 wlh_host_result_t wlh_host_internal_send_hello(wlh_host_t *host);
 wlh_pending_rpc_t *wlh_host_internal_find_pending(

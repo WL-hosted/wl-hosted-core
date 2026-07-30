@@ -513,7 +513,7 @@ WLH_NOINLINE wlh_coproc_result_t process_ota_frame(
     );
     if (status != 0) {
         ota_fail_transfer(coproc);
-        (void)send_credit_update(coproc, WLH_CHANNEL_OTA_STREAM);
+        (void)send_credit_update(coproc, WLH_CHANNEL_OTA_STREAM, 1u);
         return WLH_COPROC_BACKEND_ERROR;
     }
     coproc->ota_bytes_accepted += data_len;
@@ -526,7 +526,7 @@ reject:
     if (coproc->ota_state == OTA_STATE_RECEIVING ||
         coproc->ota_state == OTA_STATE_VERIFYING)
         ota_fail_transfer(coproc);
-    (void)send_credit_update(coproc, WLH_CHANNEL_OTA_STREAM);
+    (void)send_credit_update(coproc, WLH_CHANNEL_OTA_STREAM, 1u);
     return WLH_COPROC_PROTOCOL_ERROR;
 }
 
@@ -605,7 +605,7 @@ WLH_NOINLINE void ota_write_completed(
 ) {
     /* Each accepted chunk consumed one credit; return it here so the window
        tracks durable writes. */
-    (void)send_credit_update(coproc, WLH_CHANNEL_OTA_STREAM);
+    (void)send_credit_update(coproc, WLH_CHANNEL_OTA_STREAM, 1u);
     if (completed->transfer_id != coproc->ota_transfer_id ||
         coproc->ota_state != OTA_STATE_RECEIVING) {
         return;
