@@ -76,14 +76,29 @@ typedef int (*wlh_coproc_submit_tx_fn)(
     wlh_coproc_tx_complete_fn completion,
     void *completion_context
 );
-typedef void (*wlh_coproc_ethernet_rx_fn)(
-    void *context, const uint8_t *frame, size_t size
+typedef enum wlh_coproc_ethernet_rx_result {
+    /* The backend consumed the frame before returning. */
+    WLH_COPROC_ETHERNET_RX_COMPLETE = 0,
+    /* The backend copied/enqueued the frame and will call
+     * wlh_coproc_ethernet_rx_complete after the hardware accepts it. */
+    WLH_COPROC_ETHERNET_RX_PENDING = 1,
+    /* The backend could not admit the frame. The Core returns its credit so a
+     * transient backend fault cannot permanently shrink the channel window. */
+    WLH_COPROC_ETHERNET_RX_REJECTED = -1
+} wlh_coproc_ethernet_rx_result_t;
+typedef wlh_coproc_ethernet_rx_result_t (*wlh_coproc_ethernet_rx_fn)(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
 );
 
 typedef struct wlh_coproc_port {
     void *context;
     wlh_coproc_submit_tx_fn submit_tx;
-    /* Must copy/enqueue the frame and return without running the net stack. */
+    /* Must remain nonblocking. Returning PENDING transfers one received
+     * record to the backend until wlh_coproc_ethernet_rx_complete is called. */
     wlh_coproc_ethernet_rx_fn ethernet_rx;
     wlh_coproc_ethernet_rx_fn ethernet_ap_rx;
 } wlh_coproc_port_t;
@@ -410,6 +425,8 @@ typedef struct wlh_coproc_diagnostics {
      * credit. Growth under scan flood is expected, not a fault. */
     uint32_t hci_adv_drops;
     uint32_t bluetooth_mismatches;
+    uint32_t ethernet_rx_rejected;
+    uint32_t ethernet_rx_failed;
     uint64_t last_peer_activity_ms;
 } wlh_coproc_diagnostics_t;
 
@@ -434,6 +451,9 @@ typedef struct wlh_coproc_config {
      * derives the limit from core_queue_depth for backward compatibility.
      * Adapters should set this to their bounded TX capacity. */
     uint8_t ethernet_tx_depth;
+    /* Maximum raw Ethernet records coalesced into one wire frame. Zero lets
+     * Core aggregate until max_frame_size; one disables coalescing. */
+    uint8_t ethernet_tx_aggregation_limit;
     uint32_t stop_timeout_ms;
     wlh_osal_task_attributes_t core_task;
     /* Reported in HelloResponse.implementation_version; empty falls back to a
@@ -463,6 +483,11 @@ typedef struct wlh_coproc {
      * always make progress. A counting semaphore reserves slots without
      * making the Wi-Fi callback contend on state_mutex. */
     wlh_osal_semaphore_t ethernet_tx_slots;
+    /* Host->backend records accepted asynchronously. Access is serialized by
+     * state_mutex; the worker coalesces each channel into one CreditUpdate. */
+    uint32_t ethernet_rx_pending_credit[2];
+    uint32_t ethernet_rx_pending_failures;
+    bool ethernet_rx_wake_queued;
     bool worker_started;
     bool worker_stopping;
     uint32_t next_backend_operation_id;
@@ -574,6 +599,18 @@ wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
 );
 wlh_coproc_result_t wlh_coproc_ethernet_ap_send(
     wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+);
+/* Completes records previously accepted with ETHERNET_RX_PENDING. Completion
+ * is nonblocking from the caller's perspective apart from the Core's short
+ * state mutex. Credits are coalesced on the Core task before transmission.
+ * Late completions from an old session are rejected without affecting the
+ * active session. */
+wlh_coproc_result_t wlh_coproc_ethernet_rx_complete(
+    wlh_coproc_t *coproc,
+    uint32_t session_id,
+    uint8_t channel,
+    uint32_t units,
+    int backend_status
 );
 /* Emit a USER_PASSTHROUGH RESULT event. Nonblocking ingress, callable from
  * any task context. correlation_id must be the request_id of the original

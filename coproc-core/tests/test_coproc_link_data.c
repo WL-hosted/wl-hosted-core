@@ -248,6 +248,79 @@ void test_hello_wifi_and_ethernet(void) {
         );
     }
     {
+        uint8_t raw[11] = {1, 0, 8, 0, 3, 0, 0, 0, 7, 8, 9};
+        wlh_frame_header_t header;
+        wlh_protocol_v1_CreditUpdate update =
+            wlh_protocol_v1_CreditUpdate_init_zero;
+        size_t size = 0;
+        unsigned calls_before = f.ethernet_rx_calls;
+        unsigned sent_before = f.sent_count;
+
+        f.ethernet_rx_result = WLH_COPROC_ETHERNET_RX_PENDING;
+        wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_STA);
+        header.session_id = 42u;
+        CHECK(
+            wlh_frame_encode(
+                incoming, sizeof(incoming), &size, &header, raw, sizeof(raw)
+            ) == WLH_WIRE_OK
+        );
+        CHECK(wlh_coproc_on_frame(&core, incoming, size) == WLH_COPROC_OK);
+        for (unsigned attempt = 0u;
+             attempt < 1000u && f.ethernet_rx_calls == calls_before;
+             ++attempt)
+            wait_milliseconds(1u);
+        CHECK(f.ethernet_rx_calls == calls_before + 1u);
+        CHECK(f.ethernet_rx_session_id == 42u);
+        CHECK(f.ethernet_rx_channel == WLH_CHANNEL_ETHERNET_STA);
+        wait_milliseconds(5u);
+        CHECK(f.sent_count == sent_before);
+        CHECK(
+            wlh_coproc_ethernet_rx_complete(
+                &core, 41u, WLH_CHANNEL_ETHERNET_STA, 1u, 0
+            ) == WLH_COPROC_INVALID_STATE
+        );
+        CHECK(
+            wlh_coproc_ethernet_rx_complete(
+                &core, 42u, WLH_CHANNEL_ETHERNET_STA, 1u, 0
+            ) == WLH_COPROC_OK
+        );
+        /* A short tail remains pending until the normal worker/heartbeat
+           wake. Reaching the batching threshold must wake immediately and
+           return all accumulated units in one update. */
+        CHECK(
+            wlh_coproc_ethernet_rx_complete(
+                &core, 42u, WLH_CHANNEL_ETHERNET_STA, 31u, 0
+            ) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        CHECK(
+            wlh_frame_decode(
+                &header,
+                &frame_payload,
+                &frame_payload_size,
+                f.sent,
+                f.sent_size,
+                4096
+            ) == WLH_WIRE_OK
+        );
+        CHECK(
+            wlh_rpc_decode(
+                &rpc,
+                &rpc_payload,
+                &rpc_payload_size,
+                frame_payload,
+                frame_payload_size,
+                1536
+            ) == WLH_WIRE_OK
+        );
+        stream = pb_istream_from_buffer(rpc_payload, rpc_payload_size);
+        CHECK(pb_decode(&stream, wlh_protocol_v1_CreditUpdate_fields, &update));
+        CHECK(
+            update.channel_id == WLH_CHANNEL_ETHERNET_STA && update.units == 32u
+        );
+        f.ethernet_rx_result = WLH_COPROC_ETHERNET_RX_COMPLETE;
+    }
+    {
         uint8_t raw[11] = {1, 0, 8, 0, 3, 0, 0, 0, 4, 5, 6};
         wlh_frame_header_t header;
         size_t size = 0;

@@ -30,6 +30,9 @@ typedef struct wlh_host_job {
 typedef struct wlh_host_data_job {
     uint8_t channel;
     size_t size;
+    /* Ethernet jobs start with compact storage and grow to the negotiated
+     * wire payload bound only when the worker finds an adjacent peer. */
+    size_t capacity;
     uint8_t data[];
 } wlh_host_data_job_t;
 
@@ -63,6 +66,14 @@ wlh_host_result_t wlh_host_internal_send_payload_frame(
     const uint8_t *payload,
     size_t payload_size,
     bool reserved
+);
+wlh_host_result_t wlh_host_internal_send_payload_frame_units(
+    wlh_host_t *host,
+    uint8_t channel,
+    const uint8_t *payload,
+    size_t payload_size,
+    bool reserved,
+    uint32_t credit_units
 );
 wlh_host_result_t wlh_host_internal_rpc_message_request(
     wlh_host_t *host,
@@ -122,6 +133,8 @@ wlh_host_result_t wlh_host_internal_send_rpc_message(
 wlh_host_result_t wlh_host_internal_send_credit_update(
     wlh_host_t *host, uint8_t channel, uint32_t units
 );
+bool wlh_host_internal_flush_ethernet_rx_credits(wlh_host_t *host);
+void wlh_host_internal_reset_ethernet_rx_credits(wlh_host_t *host);
 wlh_host_result_t wlh_host_internal_send_hello(wlh_host_t *host);
 wlh_pending_rpc_t *wlh_host_internal_find_pending(
     wlh_host_t *host, const wlh_rpc_envelope_t *envelope
@@ -164,9 +177,12 @@ wlh_host_result_t wlh_host_internal_process_ota_frame(
 #define cancel_pending wlh_host_internal_cancel_pending
 #define encode_pb wlh_host_internal_encode_pb
 #define send_payload_frame wlh_host_internal_send_payload_frame
+#define send_payload_frame_units wlh_host_internal_send_payload_frame_units
 #define send_rpc wlh_host_internal_send_rpc
 #define send_rpc_message wlh_host_internal_send_rpc_message
 #define send_credit_update wlh_host_internal_send_credit_update
+#define flush_ethernet_rx_credits wlh_host_internal_flush_ethernet_rx_credits
+#define reset_ethernet_rx_credits wlh_host_internal_reset_ethernet_rx_credits
 #define send_hello wlh_host_internal_send_hello
 #define find_pending wlh_host_internal_find_pending
 #define handle_hello_response wlh_host_internal_handle_hello_response

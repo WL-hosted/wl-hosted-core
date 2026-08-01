@@ -230,6 +230,7 @@ WLH_NOINLINE wlh_coproc_result_t handle_hello_request(
     coproc->bluetooth_adv_tx_inflight = 0u;
     coproc->bluetooth_hci_stopped = false;
     ota_reset(coproc);
+    reset_ethernet_rx_completions(coproc);
     result = send_hello_response(coproc, request->request_id);
     return result;
 }

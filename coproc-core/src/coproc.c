@@ -105,12 +105,11 @@ int enqueue_job(
     );
 }
 
-/* Combine already-queued Ethernet records into one payload.  Credits and
- * sequences belong to wire frames, not raw records, so this deliberately
- * turns two or more queued jobs into one send_payload() call.  The queue is
- * FIFO: as soon as a non-Ethernet job, a different channel, or a record that
- * does not fit is observed, retain it as the worker's next job rather than
- * reordering it behind later traffic.
+/* Combine already-queued Ethernet records into one payload. Sequences belong
+ * to wire frames, while Ethernet credits remain one unit per raw record. The
+ * queue is FIFO: as soon as a non-Ethernet job, a different channel, or a
+ * record that does not fit is observed, retain it as the worker's next job
+ * rather than reordering it behind later traffic.
  *
  * This runs with state_mutex held.  ethernet_send() takes the same mutex
  * while admitting jobs, making the pending counter exact and ensuring the
@@ -119,18 +118,23 @@ static coproc_data_job_t *aggregate_ethernet_jobs(
     wlh_coproc_t *coproc,
     coproc_data_job_t *data,
     coproc_job_t *deferred,
-    bool *has_deferred
+    bool *has_deferred,
+    uint32_t *credit_units
 ) {
     const size_t payload_capacity =
         coproc->config.max_frame_size - WLH_FRAME_HEADER_SIZE;
     coproc_job_t next;
 
-    while (*has_deferred == false && coproc->config.osal.queue_receive(
-                                         coproc->config.osal.context,
-                                         &coproc->core_queue,
-                                         &next,
-                                         WLH_OSAL_NO_WAIT
-                                     ) == 0) {
+    *credit_units = 1u;
+    while ((coproc->config.ethernet_tx_aggregation_limit == 0u ||
+            *credit_units < coproc->config.ethernet_tx_aggregation_limit) &&
+           *has_deferred == false &&
+           coproc->config.osal.queue_receive(
+               coproc->config.osal.context,
+               &coproc->core_queue,
+               &next,
+               WLH_OSAL_NO_WAIT
+           ) == 0) {
         coproc_data_job_t *candidate;
 
         if (next.kind != COPROC_JOB_ETHERNET_TX) {
@@ -169,6 +173,7 @@ static coproc_data_job_t *aggregate_ethernet_jobs(
         }
         memcpy(data->data + data->size, candidate->data, candidate->size);
         data->size += candidate->size;
+        ++*credit_units;
         (void)coproc->config.osal.semaphore_give(
             coproc->config.osal.context, &coproc->ethernet_tx_slots
         );
@@ -188,6 +193,7 @@ static void coproc_worker(void *argument) {
         coproc->config.osal.context, &coproc->state_mutex, WLH_OSAL_WAIT_FOREVER
     );
     set_state(coproc, WLH_COPROC_STATE_WAITING_FOR_HELLO);
+    reset_ethernet_rx_completions(coproc);
     coproc->started_ms = now_ms(coproc);
     coproc->last_heartbeat_ms = coproc->started_ms;
     coproc->config.osal.mutex_unlock(
@@ -201,8 +207,11 @@ static void coproc_worker(void *argument) {
             &coproc->state_mutex,
             WLH_OSAL_WAIT_FOREVER
         );
-        (void)coproc_emit_due_heartbeat(coproc);
-        wait_ms = coproc_next_wait_ms(coproc);
+        {
+            bool retry_ethernet_credit = flush_ethernet_rx_completions(coproc);
+            (void)coproc_emit_due_heartbeat(coproc);
+            wait_ms = retry_ethernet_credit ? 1u : coproc_next_wait_ms(coproc);
+        }
         coproc->config.osal.mutex_unlock(
             coproc->config.osal.context, &coproc->state_mutex
         );
@@ -281,11 +290,17 @@ static void coproc_worker(void *argument) {
             } else if (job.kind == COPROC_JOB_ETHERNET_TX) {
                 coproc_data_job_t *data = job.payload;
                 wlh_coproc_result_t result;
+                uint32_t credit_units;
                 data = aggregate_ethernet_jobs(
-                    coproc, data, &deferred_job, &has_deferred_job
+                    coproc,
+                    data,
+                    &deferred_job,
+                    &has_deferred_job,
+                    &credit_units
                 );
-                result =
-                    send_payload(coproc, data->channel, data->data, data->size);
+                result = send_payload_units(
+                    coproc, data->channel, data->data, data->size, credit_units
+                );
                 /* The initial record owns one end-to-end pipeline slot until
                  * the transport completion callback. Synchronous admission
                  * failure leaves no completion to release it. */
@@ -348,6 +363,9 @@ static void coproc_worker(void *argument) {
             } else if (job.kind == COPROC_JOB_TRANSPORT_FAILED) {
                 WLH_LOGW("wlh_coproc", "transport failed");
                 set_state(coproc, WLH_COPROC_STATE_FAILED);
+            } else if (job.kind == COPROC_JOB_ETHERNET_RX_COMPLETE) {
+                /* The coalesced counters are flushed at the top of the next
+                 * worker iteration. This job only wakes an idle worker. */
             }
             coproc->config.osal.mutex_unlock(
                 coproc->config.osal.context, &coproc->state_mutex
@@ -360,6 +378,7 @@ static void coproc_worker(void *argument) {
     );
     set_state(coproc, WLH_COPROC_STATE_STOPPED);
     coproc->session_id = 0u;
+    reset_ethernet_rx_completions(coproc);
     coproc->config.osal.mutex_unlock(
         coproc->config.osal.context, &coproc->state_mutex
     );
@@ -620,6 +639,7 @@ void wlh_coproc_test_reset_session(wlh_coproc_t *coproc, uint32_t reason) {
 
         ++coproc->diagnostics.peer_resets;
         coproc->session_id = 0u;
+        reset_ethernet_rx_completions(coproc);
         memset(
             &coproc->bluetooth_pending, 0, sizeof(coproc->bluetooth_pending)
         );

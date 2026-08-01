@@ -106,13 +106,33 @@ void check_raw_record(
     CHECK(memcmp(payload + 8u, expected, expected_size) == 0);
 }
 
-void ethernet_rx(void *context, const uint8_t *frame, size_t size) {
+wlh_coproc_ethernet_rx_result_t ethernet_rx(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
+) {
     (void)frame;
-    ((fixture_t *)context)->ethernet_size = size;
+    fixture_t *fixture = context;
+    fixture->ethernet_size = size;
+    fixture->ethernet_rx_session_id = session_id;
+    fixture->ethernet_rx_channel = channel;
+    ++fixture->ethernet_rx_calls;
+    return fixture->ethernet_rx_result;
 }
-void ethernet_ap_rx(void *context, const uint8_t *frame, size_t size) {
+wlh_coproc_ethernet_rx_result_t ethernet_ap_rx(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
+) {
     (void)frame;
+    (void)session_id;
+    (void)channel;
     ((fixture_t *)context)->ethernet_ap_size = size;
+    return WLH_COPROC_ETHERNET_RX_COMPLETE;
 }
 int wifi_init(void *context, uint32_t operation_id, uint32_t interface_flags) {
     fixture_t *fixture = context;

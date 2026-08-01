@@ -41,6 +41,10 @@ typedef struct fixture {
     int initialized;
     size_t ethernet_size;
     size_t ethernet_ap_size;
+    unsigned ethernet_rx_calls;
+    uint32_t ethernet_rx_session_id;
+    uint8_t ethernet_rx_channel;
+    wlh_coproc_ethernet_rx_result_t ethernet_rx_result;
     unsigned sent_count;
     uint8_t sent_log[16][4096];
     size_t sent_log_size[16];
@@ -133,8 +137,20 @@ void check_raw_record(
     const uint8_t *expected,
     size_t expected_size
 );
-void ethernet_rx(void *context, const uint8_t *frame, size_t size);
-void ethernet_ap_rx(void *context, const uint8_t *frame, size_t size);
+wlh_coproc_ethernet_rx_result_t ethernet_rx(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
+);
+wlh_coproc_ethernet_rx_result_t ethernet_ap_rx(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
+);
 int wifi_init(void *context, uint32_t operation_id, uint32_t interface_flags);
 int get_device_info(void *context, wlh_coproc_device_info_t *info);
 int on_user_message(void *context, const wlh_coproc_user_message_t *message);

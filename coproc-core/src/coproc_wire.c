@@ -35,23 +35,24 @@ static void tx_complete(
         );
 }
 
-wlh_coproc_result_t send_payload(
+wlh_coproc_result_t send_payload_units(
     wlh_coproc_t *coproc,
     uint8_t channel,
     const uint8_t *payload,
-    size_t payload_size
+    size_t payload_size,
+    uint32_t credit_units
 ) {
     uint8_t *frame;
     wlh_frame_header_t header;
     size_t frame_size = 0;
 
-    if (payload_size + WLH_FRAME_HEADER_SIZE > coproc->config.max_frame_size) {
+    if (payload_size + WLH_FRAME_HEADER_SIZE > coproc->config.max_frame_size ||
+        credit_units == 0u) {
         return WLH_COPROC_INVALID_ARGUMENT;
     }
     if (channel != WLH_CHANNEL_LINK_CONTROL &&
-        coproc->tx_credit[channel] == 0u) {
+        coproc->tx_credit[channel] < credit_units) {
         set_state(coproc, WLH_COPROC_STATE_CONGESTED);
-        WLH_LOGW("wlh_coproc", "no credit on channel %u", (unsigned)channel);
         return WLH_COPROC_NO_CREDIT;
     }
 
@@ -88,10 +89,19 @@ wlh_coproc_result_t send_payload(
     ++coproc->tx_sequence[channel];
 
     if (channel != WLH_CHANNEL_LINK_CONTROL) {
-        --coproc->tx_credit[channel];
+        coproc->tx_credit[channel] -= credit_units;
     }
     ++coproc->diagnostics.tx_frames;
     return WLH_COPROC_OK;
+}
+
+wlh_coproc_result_t send_payload(
+    wlh_coproc_t *coproc,
+    uint8_t channel,
+    const uint8_t *payload,
+    size_t payload_size
+) {
+    return send_payload_units(coproc, channel, payload, payload_size, 1u);
 }
 
 WLH_NOINLINE wlh_coproc_result_t send_rpc(

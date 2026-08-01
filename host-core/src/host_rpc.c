@@ -133,6 +133,9 @@ uint32_t host_next_wait_ms(const wlh_host_t *host) {
         if (heartbeat_deadline < nearest)
             nearest = heartbeat_deadline;
     }
+    if (host->ethernet_rx_credit_due_ms != 0u &&
+        host->ethernet_rx_credit_due_ms < nearest)
+        nearest = host->ethernet_rx_credit_due_ms;
     return nearest == UINT64_MAX ? WLH_OSAL_WAIT_FOREVER
                                  : deadline_wait_ms(current, nearest);
 }

@@ -50,7 +50,8 @@ typedef enum coproc_job_kind {
     COPROC_JOB_BLUETOOTH_TX,
     COPROC_JOB_BLUETOOTH_FATAL,
     COPROC_JOB_OTA_COMPLETE,
-    COPROC_JOB_OTA_WRITE_COMPLETE
+    COPROC_JOB_OTA_WRITE_COMPLETE,
+    COPROC_JOB_ETHERNET_RX_COMPLETE
 } coproc_job_kind_t;
 
 typedef struct coproc_job {
@@ -116,6 +117,13 @@ wlh_coproc_result_t wlh_coproc_internal_send_payload(
     const uint8_t *payload,
     size_t payload_size
 );
+wlh_coproc_result_t wlh_coproc_internal_send_payload_units(
+    wlh_coproc_t *coproc,
+    uint8_t channel,
+    const uint8_t *payload,
+    size_t payload_size,
+    uint32_t credit_units
+);
 wlh_coproc_result_t wlh_coproc_internal_send_rpc(
     wlh_coproc_t *coproc,
     uint16_t service,
@@ -151,6 +159,8 @@ wlh_coproc_result_t wlh_coproc_internal_send_rpc_message(
 wlh_coproc_result_t wlh_coproc_internal_send_credit_update(
     wlh_coproc_t *coproc, uint8_t channel, uint32_t units
 );
+bool wlh_coproc_internal_flush_ethernet_rx_completions(wlh_coproc_t *coproc);
+void wlh_coproc_internal_reset_ethernet_rx_completions(wlh_coproc_t *coproc);
 wlh_coproc_result_t wlh_coproc_internal_send_status(
     wlh_coproc_t *coproc, const wlh_rpc_envelope_t *request, int status
 );
@@ -267,10 +277,15 @@ void wlh_coproc_internal_ota_write_completed(
 #define set_state wlh_coproc_internal_set_state
 #define enqueue_job wlh_coproc_internal_enqueue_job
 #define send_payload wlh_coproc_internal_send_payload
+#define send_payload_units wlh_coproc_internal_send_payload_units
 #define send_rpc wlh_coproc_internal_send_rpc
 #define encode_message wlh_coproc_internal_encode_message
 #define send_rpc_message wlh_coproc_internal_send_rpc_message
 #define send_credit_update wlh_coproc_internal_send_credit_update
+#define flush_ethernet_rx_completions                                          \
+    wlh_coproc_internal_flush_ethernet_rx_completions
+#define reset_ethernet_rx_completions                                          \
+    wlh_coproc_internal_reset_ethernet_rx_completions
 #define send_status wlh_coproc_internal_send_status
 #define send_service_error wlh_coproc_internal_send_service_error
 #define handle_rpc wlh_coproc_internal_handle_rpc

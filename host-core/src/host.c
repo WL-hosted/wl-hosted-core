@@ -230,6 +230,7 @@ static void host_worker(void *argument) {
             host->config.osal.context, &host->state_mutex, WLH_OSAL_WAIT_FOREVER
         );
         (void)host_process_deadlines(host);
+        (void)flush_ethernet_rx_credits(host);
         wait_ms = host_next_wait_ms(host);
         host->config.osal.mutex_unlock(
             host->config.osal.context, &host->state_mutex
@@ -282,8 +283,8 @@ static void host_worker(void *argument) {
                     data->channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
                 if (host->ethernet_tx_queued[ethernet_index] > 0u)
                     --host->ethernet_tx_queued[ethernet_index];
-                result = send_payload_frame(
-                    host, data->channel, data->data, data->size, false
+                result = send_payload_frame_units(
+                    host, data->channel, data->data, data->size, false, 1u
                 );
                 if (result != WLH_HOST_OK) {
                     (void)host->config.osal.semaphore_give(

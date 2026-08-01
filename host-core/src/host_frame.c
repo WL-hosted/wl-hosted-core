@@ -11,6 +11,57 @@
 #include <pb_decode.h>
 #include <pb_encode.h>
 
+#define WLH_ETHERNET_CREDIT_BATCH 8u
+#define WLH_ETHERNET_CREDIT_MAX_DELAY_MS 1u
+
+void reset_ethernet_rx_credits(wlh_host_t *host) {
+    memset(
+        host->ethernet_rx_pending_credit,
+        0,
+        sizeof(host->ethernet_rx_pending_credit)
+    );
+    host->ethernet_rx_credit_due_ms = 0u;
+}
+
+bool flush_ethernet_rx_credits(wlh_host_t *host) {
+    uint64_t current = now_ms(host);
+    bool due = host->ethernet_rx_credit_due_ms != 0u &&
+               current >= host->ethernet_rx_credit_due_ms;
+    bool retry = false;
+    size_t index;
+
+    for (index = 0u; index < 2u; ++index) {
+        uint32_t units = host->ethernet_rx_pending_credit[index];
+        uint8_t channel =
+            index == 0u ? WLH_CHANNEL_ETHERNET_STA : WLH_CHANNEL_ETHERNET_AP;
+        if (units == 0u || (units < WLH_ETHERNET_CREDIT_BATCH && !due))
+            continue;
+        if (send_credit_update(host, channel, units) == WLH_HOST_OK)
+            host->ethernet_rx_pending_credit[index] = 0u;
+        else
+            retry = true;
+    }
+    if (host->ethernet_rx_pending_credit[0] == 0u &&
+        host->ethernet_rx_pending_credit[1] == 0u)
+        host->ethernet_rx_credit_due_ms = 0u;
+    else
+        host->ethernet_rx_credit_due_ms =
+            current + WLH_ETHERNET_CREDIT_MAX_DELAY_MS;
+    return retry;
+}
+
+static void accumulate_ethernet_rx_credit(
+    wlh_host_t *host, uint8_t channel, uint32_t units
+) {
+    size_t index = channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
+    uint32_t old = host->ethernet_rx_pending_credit[index];
+    host->ethernet_rx_pending_credit[index] =
+        UINT32_MAX - old < units ? UINT32_MAX : old + units;
+    if (host->ethernet_rx_credit_due_ms == 0u)
+        host->ethernet_rx_credit_due_ms =
+            now_ms(host) + WLH_ETHERNET_CREDIT_MAX_DELAY_MS;
+}
+
 WLH_NOINLINE wlh_host_result_t
 process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
     wlh_frame_header_t header;
@@ -89,7 +140,6 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
         wlh_raw_record_iterator_t iterator;
         wlh_raw_record_view_t record;
         wlh_wire_result_t record_result = WLH_WIRE_INVALID_ARGUMENT;
-        wlh_host_result_t credit_result;
         uint32_t record_units = 0u;
 
         /* Validate every aggregated record before dispatching any of them,
@@ -135,17 +185,9 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
            credits per frame and drains the channel monotonically. A malformed
            payload yields no trustworthy record count, so fall back to one
            unit rather than a value derived from a bad parse. */
-        credit_result = send_credit_update(
+        accumulate_ethernet_rx_credit(
             host, header.channel, payload_valid ? record_units : 1u
         );
-        if (credit_result != WLH_HOST_OK) {
-            WLH_LOGW(
-                "wlh_host",
-                "credit update failed on channel %u: %d",
-                (unsigned)header.channel,
-                (int)credit_result
-            );
-        }
         if (!payload_valid) {
             WLH_LOGW(
                 "wlh_host",

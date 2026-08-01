@@ -43,23 +43,24 @@ wlh_host_result_t encode_pb(
     return WLH_HOST_OK;
 }
 
-wlh_host_result_t send_payload_frame(
+wlh_host_result_t send_payload_frame_units(
     wlh_host_t *host,
     uint8_t channel,
     const uint8_t *payload,
     size_t payload_size,
-    bool reserved
+    bool reserved,
+    uint32_t credit_units
 ) {
     wlh_frame_header_t header;
     uint8_t *frame;
     size_t frame_size = WLH_FRAME_HEADER_SIZE + payload_size;
     size_t encoded_size = 0u;
-    if (frame_size > host->config.max_frame_size || payload_size > UINT16_MAX) {
+    if (frame_size > host->config.max_frame_size || payload_size > UINT16_MAX ||
+        credit_units == 0u) {
         return WLH_HOST_INVALID_ARGUMENT;
     }
-    if (!reserved && host->tx_credit[channel] == 0u) {
+    if (!reserved && host->tx_credit[channel] < credit_units) {
         set_state(host, WLH_HOST_STATE_CONGESTED);
-        WLH_LOGW("wlh_host", "no credit on channel %u", (unsigned)channel);
         return WLH_HOST_NO_CREDIT;
     }
     frame =
@@ -95,10 +96,22 @@ wlh_host_result_t send_payload_frame(
     }
     ++host->tx_sequence[channel];
     if (!reserved) {
-        host->tx_credit[channel]--;
+        host->tx_credit[channel] -= credit_units;
     }
     host->diagnostics.tx_frames++;
     return WLH_HOST_OK;
+}
+
+wlh_host_result_t send_payload_frame(
+    wlh_host_t *host,
+    uint8_t channel,
+    const uint8_t *payload,
+    size_t payload_size,
+    bool reserved
+) {
+    return send_payload_frame_units(
+        host, channel, payload, payload_size, reserved, 1u
+    );
 }
 
 wlh_host_result_t send_rpc(

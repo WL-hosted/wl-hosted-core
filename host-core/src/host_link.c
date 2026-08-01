@@ -127,6 +127,7 @@ wlh_host_result_t handle_hello_response(
         set_state(host, WLH_HOST_STATE_FAILED);
         return WLH_HOST_PROTOCOL_ERROR;
     }
+    reset_ethernet_rx_credits(host);
     host->session_id = hello->session_id;
     memcpy(
         host->peer_version,

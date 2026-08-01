@@ -22,7 +22,7 @@ static wlh_host_result_t ethernet_send(
 ) {
     uint8_t *record;
     uint8_t ethernet_index;
-    static uint32_t admission_denials;
+    static uint32_t queue_full_denials;
     if (host == NULL || ethernet_frame == NULL || size == 0u || size > 1600u ||
         !host->worker_started)
         return WLH_HOST_INVALID_ARGUMENT;
@@ -58,6 +58,7 @@ static wlh_host_result_t ethernet_send(
             return WLH_HOST_INVALID_ARGUMENT;
         }
         job->size = record_size;
+        job->capacity = record_size;
         if (host->config.osal.mutex_lock(
                 host->config.osal.context,
                 &host->state_mutex,
@@ -89,8 +90,11 @@ static wlh_host_result_t ethernet_send(
                 ++host->diagnostics.ethernet_no_credit;
             else
                 ++host->diagnostics.ethernet_queue_full;
-            ++admission_denials;
-            if (admission_denials <= 5u || admission_denials % 100u == 0u) {
+            if (!no_credit) {
+                ++queue_full_denials;
+            }
+            if (!no_credit &&
+                (queue_full_denials <= 5u || queue_full_denials % 100u == 0u)) {
                 WLH_LOGW(
                     "wlh_host",
                     "ethernet admission denied channel=%u credit=%lu "
@@ -98,7 +102,7 @@ static wlh_host_result_t ethernet_send(
                     (unsigned)channel,
                     (unsigned long)host->tx_credit[channel],
                     (unsigned long)host->ethernet_tx_queued[ethernet_index],
-                    no_credit ? "no_credit" : "queue_full"
+                    "queue_full"
                 );
             }
             host->config.osal.mutex_unlock(

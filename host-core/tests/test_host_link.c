@@ -96,7 +96,9 @@ void test_timeout_credit_and_session(void) {
     );
     assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
     wait_for_state(&fixture, WLH_HOST_STATE_NEGOTIATING);
-    wait_for_tx(&fixture, 5u);
+    /* The two adjacent Ethernet jobs may be emitted as one aggregate, so the
+       recovery Hello is the fourth transport frame rather than the fifth. */
+    wait_for_tx(&fixture, 4u);
     request_id = captured_request_id(&fixture, &service, &method);
     assert(
         request_id != 0u && service == WLH_SERVICE_LINK &&

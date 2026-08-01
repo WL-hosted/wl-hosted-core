@@ -21,6 +21,7 @@ void test_ap_ethernet(void) {
     fixture_init(&fixture);
     establish_ready(&fixture);
     events_before = fixture.events;
+    tx_before = fixture.tx_count;
     wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_AP);
     header.session_id = 42u;
     assert(
@@ -31,6 +32,8 @@ void test_ap_ethernet(void) {
     assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
     while (fixture.events == events_before)
         wait_milliseconds(1u);
+    fixture.now += 1u;
+    wait_for_tx(&fixture, tx_before + 1u);
     assert(fixture.last_event_kind == WLH_HOST_EVENT_ETHERNET_AP_RX);
     assert(
         fixture.last_event_payload_size == 3u &&
@@ -82,6 +85,9 @@ void test_ap_ethernet(void) {
         ) == WLH_WIRE_OK
     );
     assert(wlh_host_on_frame(&fixture.host, frame, frame_size) == WLH_HOST_OK);
+    while (fixture.host.ethernet_rx_pending_credit[1] == 0u)
+        wait_milliseconds(1u);
+    fixture.now += 1u;
     wait_for_tx(&fixture, tx_before + 1u);
     assert(fixture.events == events_before);
     fixture.reject_executor = false;
@@ -204,6 +210,7 @@ void test_ethernet_aggregated_credit_accounting(void) {
         wait_milliseconds(1u);
     assert(fixture.events == events_before + 3u);
 
+    fixture.now += 1u;
     wait_for_tx(&fixture, tx_before + 1u);
     assert(
         wlh_frame_decode(

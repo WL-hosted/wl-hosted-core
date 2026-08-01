@@ -273,6 +273,11 @@ typedef struct wlh_host {
     /* Ethernet linkoutput must only report success when there is credit for
      * the queued frame. Protected by state_mutex. */
     uint32_t ethernet_tx_queued[2];
+    /* Ethernet RX credits are coalesced by the Core worker. This prevents a
+     * control-frame transaction per received packet while bounding credit
+     * latency and retaining units across synchronous transport rejection. */
+    uint32_t ethernet_rx_pending_credit[2];
+    uint64_t ethernet_rx_credit_due_ms;
     bool rx_sequence_valid[WLH_HOST_CHANNEL_COUNT];
 
     wlh_pending_rpc_t pending[WLH_HOST_MAX_PENDING];

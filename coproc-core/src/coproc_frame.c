@@ -16,6 +16,109 @@
 #include <pb_decode.h>
 #include <pb_encode.h>
 
+#define WLH_ETHERNET_CREDIT_BATCH_UNITS 32u
+
+static int ethernet_channel_index(uint8_t channel) {
+    if (channel == WLH_CHANNEL_ETHERNET_STA)
+        return 0;
+    if (channel == WLH_CHANNEL_ETHERNET_AP)
+        return 1;
+    return -1;
+}
+
+void reset_ethernet_rx_completions(wlh_coproc_t *coproc) {
+    coproc->ethernet_rx_pending_credit[0] = 0u;
+    coproc->ethernet_rx_pending_credit[1] = 0u;
+    coproc->ethernet_rx_pending_failures = 0u;
+    coproc->ethernet_rx_wake_queued = false;
+}
+
+bool flush_ethernet_rx_completions(wlh_coproc_t *coproc) {
+    static const uint8_t channels[2] = {
+        WLH_CHANNEL_ETHERNET_STA,
+        WLH_CHANNEL_ETHERNET_AP,
+    };
+    bool retry = false;
+    size_t index;
+
+    coproc->ethernet_rx_wake_queued = false;
+    if (coproc->ethernet_rx_pending_failures != 0u) {
+        coproc->diagnostics.ethernet_rx_failed +=
+            coproc->ethernet_rx_pending_failures;
+        coproc->ethernet_rx_pending_failures = 0u;
+    }
+    for (index = 0u; index < 2u; ++index) {
+        uint32_t units = coproc->ethernet_rx_pending_credit[index];
+        if (units == 0u)
+            continue;
+        coproc->ethernet_rx_pending_credit[index] = 0u;
+        if (coproc->session_id == 0u ||
+            send_credit_update(coproc, channels[index], units) !=
+                WLH_COPROC_OK) {
+            if (UINT32_MAX - coproc->ethernet_rx_pending_credit[index] < units)
+                coproc->ethernet_rx_pending_credit[index] = UINT32_MAX;
+            else
+                coproc->ethernet_rx_pending_credit[index] += units;
+            retry = true;
+        }
+    }
+    return retry;
+}
+
+wlh_coproc_result_t wlh_coproc_ethernet_rx_complete(
+    wlh_coproc_t *coproc,
+    uint32_t session_id,
+    uint8_t channel,
+    uint32_t units,
+    int backend_status
+) {
+    int index = ethernet_channel_index(channel);
+    bool enqueue_wake = false;
+    if (coproc == NULL || units == 0u || index < 0)
+        return WLH_COPROC_INVALID_ARGUMENT;
+    if (!coproc->worker_started || coproc->config.osal.mutex_lock(
+                                       coproc->config.osal.context,
+                                       &coproc->state_mutex,
+                                       WLH_OSAL_WAIT_FOREVER
+                                   ) != 0)
+        return WLH_COPROC_INVALID_STATE;
+    if (coproc->session_id == 0u || session_id != coproc->session_id) {
+        coproc->config.osal.mutex_unlock(
+            coproc->config.osal.context, &coproc->state_mutex
+        );
+        return WLH_COPROC_INVALID_STATE;
+    }
+    if (UINT32_MAX - coproc->ethernet_rx_pending_credit[index] < units)
+        coproc->ethernet_rx_pending_credit[index] = UINT32_MAX;
+    else
+        coproc->ethernet_rx_pending_credit[index] += units;
+    if (backend_status != 0 &&
+        coproc->ethernet_rx_pending_failures < UINT32_MAX)
+        ++coproc->ethernet_rx_pending_failures;
+    /* Do not wake the Core for every Wi-Fi TX completion. At line rate that
+       creates one 52-byte CreditUpdate (and one SDIO transaction) per packet,
+       which can consume more bus time than the Ethernet data itself. The
+       normal worker/heartbeat wake flushes a short tail; a full batch wakes
+       it immediately so at most one negotiated channel window is withheld. */
+    if (!coproc->ethernet_rx_wake_queued &&
+        coproc->ethernet_rx_pending_credit[index] >=
+            WLH_ETHERNET_CREDIT_BATCH_UNITS) {
+        coproc->ethernet_rx_wake_queued = true;
+        enqueue_wake = true;
+    }
+    coproc->config.osal.mutex_unlock(
+        coproc->config.osal.context, &coproc->state_mutex
+    );
+    if (enqueue_wake &&
+        enqueue_job(
+            coproc, COPROC_JOB_ETHERNET_RX_COMPLETE, NULL, WLH_OSAL_NO_WAIT
+        ) != 0) {
+        /* A full queue already guarantees that the worker is runnable. It
+         * flushes the accumulated credits before its next receive. */
+    }
+    return WLH_COPROC_OK;
+}
+
 WLH_NOINLINE wlh_coproc_result_t
 process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
     wlh_frame_header_t header;
@@ -91,7 +194,7 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         wlh_raw_record_iterator_t iterator;
         wlh_raw_record_view_t record;
         wlh_wire_result_t record_result = WLH_WIRE_INVALID_ARGUMENT;
-        uint32_t record_units = 0u;
+        uint32_t immediate_credit_units = 0u;
 
         /* Validate every aggregated record before delivering any of them,
            so a malformed tail cannot partially deliver a frame. */
@@ -101,7 +204,6 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
             while ((record_result =
                         wlh_raw_record_iterator_next(&iterator, &record)) ==
                    WLH_WIRE_OK) {
-                ++record_units;
             }
         }
         payload_valid = payload_valid && record_result == WLH_WIRE_END;
@@ -116,13 +218,24 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
             while (wlh_raw_record_iterator_next(&iterator, &record) ==
                    WLH_WIRE_OK) {
                 if (record.record_type != 1u || receive == NULL) {
+                    ++immediate_credit_units;
                     continue;
                 }
-                receive(
-                    coproc->config.port.context,
-                    record.payload,
-                    record.payload_size
-                );
+                {
+                    wlh_coproc_ethernet_rx_result_t receive_result = receive(
+                        coproc->config.port.context,
+                        coproc->session_id,
+                        header.channel,
+                        record.payload,
+                        record.payload_size
+                    );
+                    if (receive_result == WLH_COPROC_ETHERNET_RX_PENDING)
+                        continue;
+                    ++immediate_credit_units;
+                    if (receive_result == WLH_COPROC_ETHERNET_RX_REJECTED) {
+                        ++coproc->diagnostics.ethernet_rx_rejected;
+                    }
+                }
             }
         } else {
             WLH_LOGW(
@@ -134,13 +247,14 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         }
         /* Return the credit even when the payload is rejected, so a transient
            fault cannot permanently strand the peer in CONGESTED. The peer
-           charges one unit per raw record, so an aggregated frame must return
-           one unit per record; returning a single unit per frame leaks
-           record_units-1 credits and eventually stalls the channel. A
+           charges one unit per raw record. Synchronous deliveries return here;
+           asynchronous deliveries return from ethernet_rx_complete. A
            malformed payload yields no trustworthy record count, so fall back
            to one unit rather than a value derived from a bad parse. */
+        if (!payload_valid)
+            immediate_credit_units = 1u;
         (void)send_credit_update(
-            coproc, header.channel, payload_valid ? record_units : 1u
+            coproc, header.channel, immediate_credit_units
         );
         return payload_valid ? WLH_COPROC_OK : WLH_COPROC_PROTOCOL_ERROR;
     }
