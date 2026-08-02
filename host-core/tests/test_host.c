@@ -7,6 +7,7 @@ int main(void) {
     test_timeout_credit_and_session();
     test_ap_ethernet();
     test_ethernet_aggregated_credit_accounting();
+    test_ethernet_tx_aggregation();
     test_asynchronous_transport_start();
     test_device_info_and_user_passthrough();
     test_io_adc_kv_clients();

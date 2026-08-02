@@ -258,6 +258,15 @@ typedef struct wlh_host_config {
     /* Maximum Ethernet frames admitted across the Core and transport. Zero
      * derives the limit from core_queue_depth for backward compatibility. */
     uint8_t ethernet_tx_depth;
+    /* Maximum raw Ethernet records the worker coalesces into one wire frame
+     * on the host -> coprocessor data path. 0 or 1 disables aggregation (one
+     * record per wire frame, the default and the only mode before this field
+     * existed); N >= 2 batches up to N consecutive same-channel records into
+     * a single wire frame, additionally bounded by max_frame_size. Credit is
+     * still charged and returned one unit per record, so aggregation only
+     * reduces the wire-frame/transport-operation count, never the credit
+     * accounting. A zero value keeps every existing adapter's behavior. */
+    uint8_t ethernet_tx_aggregation_limit;
     uint32_t stop_timeout_ms;
     wlh_osal_task_attributes_t core_task;
 } wlh_host_config_t;

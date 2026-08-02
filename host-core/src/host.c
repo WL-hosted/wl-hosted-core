@@ -212,9 +212,100 @@ void set_state(wlh_host_t *host, wlh_host_state_t state) {
     dispatch_event(host, WLH_HOST_EVENT_STATE_CHANGED, 0u, 0u, NULL, 0u);
 }
 
+/* Combine already-queued Ethernet records into one wire-frame payload.
+ * Sequences belong to wire frames, while Ethernet credits remain one unit
+ * per raw record. The queue is FIFO: as soon as a non-Ethernet job, a
+ * different channel, or a record that does not fit is observed, retain it as
+ * the worker's next job rather than reordering it behind later traffic.
+ *
+ * This mirrors the coprocessor's coproc.c aggregate_ethernet_jobs() so both
+ * directions amortize transport operations the same way. It runs with
+ * state_mutex held; ethernet_send() takes the same mutex while admitting
+ * jobs, making the pending counters exact and ensuring the source jobs
+ * cannot be modified while their record bytes are copied. */
+static wlh_host_data_job_t *aggregate_ethernet_jobs(
+    wlh_host_t *host,
+    wlh_host_data_job_t *data,
+    wlh_host_job_t *deferred,
+    bool *has_deferred,
+    uint32_t *credit_units
+) {
+    const size_t payload_capacity =
+        host->config.max_frame_size - WLH_FRAME_HEADER_SIZE;
+    wlh_host_job_t next;
+
+    *credit_units = 1u;
+    while (*has_deferred == false &&
+           host->config.ethernet_tx_aggregation_limit >= 2u &&
+           *credit_units < host->config.ethernet_tx_aggregation_limit &&
+           host->config.osal.queue_receive(
+               host->config.osal.context,
+               &host->core_queue,
+               &next,
+               WLH_OSAL_NO_WAIT
+           ) == 0) {
+        wlh_host_data_job_t *candidate;
+
+        if (next.kind != WLH_HOST_JOB_ETHERNET_TX) {
+            *deferred = next;
+            *has_deferred = true;
+            break;
+        }
+        candidate = next.payload;
+        if (candidate->channel != data->channel ||
+            data->size > payload_capacity ||
+            candidate->size > payload_capacity - data->size) {
+            *deferred = next;
+            *has_deferred = true;
+            break;
+        }
+        if (data->capacity < payload_capacity) {
+            wlh_host_data_job_t *expanded =
+                (wlh_host_data_job_t *)host->config.buffers.alloc(
+                    host->config.buffers.context,
+                    sizeof(*expanded) + payload_capacity
+                );
+            if (expanded == NULL) {
+                *deferred = next;
+                *has_deferred = true;
+                break;
+            }
+            memset(expanded, 0, sizeof(*expanded));
+            expanded->channel = data->channel;
+            expanded->size = data->size;
+            expanded->capacity = payload_capacity;
+            memcpy(expanded->data, data->data, data->size);
+            host->config.buffers.free(
+                host->config.buffers.context, (uint8_t *)data
+            );
+            data = expanded;
+        }
+        memcpy(data->data + data->size, candidate->data, candidate->size);
+        data->size += candidate->size;
+        ++*credit_units;
+        /* The merged candidate's admission slot and queued counter were
+         * accounted when ethernet_send() accepted it; release both now that
+         * its bytes ride inside the aggregated frame. */
+        (void)host->config.osal.semaphore_give(
+            host->config.osal.context, &host->ethernet_tx_slots
+        );
+        {
+            uint8_t ethernet_index = ethernet_channel_index(candidate->channel);
+            if (host->ethernet_tx_queued[ethernet_index] > 0u)
+                --host->ethernet_tx_queued[ethernet_index];
+        }
+        host->config.buffers.free(
+            host->config.buffers.context, (uint8_t *)candidate
+        );
+    }
+    return data;
+}
+
 static void host_worker(void *argument) {
     wlh_host_t *host = argument;
     wlh_host_job_t job;
+    wlh_host_job_t deferred_job;
+    bool has_deferred_job = false;
     uint32_t ethernet_transport_failures = 0u;
     (void)host->config.osal.mutex_lock(
         host->config.osal.context, &host->state_mutex, WLH_OSAL_WAIT_FOREVER
@@ -236,9 +327,14 @@ static void host_worker(void *argument) {
             host->config.osal.context, &host->state_mutex
         );
 
-        if (host->config.osal.queue_receive(
+        if (has_deferred_job ||
+            host->config.osal.queue_receive(
                 host->config.osal.context, &host->core_queue, &job, wait_ms
             ) == 0) {
+            if (has_deferred_job) {
+                job = deferred_job;
+                has_deferred_job = false;
+            }
             (void)host->config.osal.mutex_lock(
                 host->config.osal.context,
                 &host->state_mutex,
@@ -279,11 +375,20 @@ static void host_worker(void *argument) {
             } else if (job.kind == WLH_HOST_JOB_ETHERNET_TX) {
                 wlh_host_data_job_t *data = job.payload;
                 wlh_host_result_t result;
+                uint32_t credit_units;
                 uint8_t ethernet_index = ethernet_channel_index(data->channel);
+                data = aggregate_ethernet_jobs(
+                    host, data, &deferred_job, &has_deferred_job, &credit_units
+                );
                 if (host->ethernet_tx_queued[ethernet_index] > 0u)
                     --host->ethernet_tx_queued[ethernet_index];
                 result = send_payload_frame_units(
-                    host, data->channel, data->data, data->size, false, 1u
+                    host,
+                    data->channel,
+                    data->data,
+                    data->size,
+                    false,
+                    credit_units
                 );
                 if (result != WLH_HOST_OK) {
                     (void)host->config.osal.semaphore_give(
