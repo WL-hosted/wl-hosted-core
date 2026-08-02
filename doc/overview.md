@@ -71,7 +71,7 @@ flowchart LR
 Core 不直接操作硬件引脚、USB/SPI/SDIO 寄存器或网络栈。所有平台相关行为通过回调注入：
 
 - Host Core：transport start/stop/submit_tx、buffer alloc/free、OSAL、executor post、event callback、可选 Bluetooth HCI rx/tx_ready。
-- Coprocessor Core：submit_tx、buffer alloc/free、OSAL、Wi-Fi/Bluetooth 后端回调、可选 device_info/user_passthrough/ethernet_rx。
+- Coprocessor Core：submit_tx、buffer alloc/free、OSAL、Wi-Fi/Bluetooth 后端回调、可选 device_info/user_passthrough/ethernet_sta_rx。
 
 Adapter 的职责是把硬件中断、DMA 完成、RTOS 消息等转换为对 `wlh_host_on_frame()` 或 `wlh_coproc_on_frame()` 的非阻塞调用，以及把 Core 提交的 `submit_tx` 转换为实际总线发送。
 

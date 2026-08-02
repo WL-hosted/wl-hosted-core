@@ -37,11 +37,12 @@ v1 Header 固定为 24 字节：
 | `0x07` | LOG_STREAM | UTF-8/二进制日志 Record |
 | `0x08` | USER_PASSTHROUGH | User Stream Record |
 | `0x09` | BLUETOOTH_HCI_ADV | 一个或多个 HCI Event Record（best-effort LE 广播/扫描报告） |
-| `0x0a..0x3f` | Reserved Standard | 禁止私用 |
+| `0x0a` | ETHERNET_ETH | 一个或多个 Raw Record |
+| `0x0b..0x3f` | Reserved Standard | 禁止私用 |
 | `0x40..0x7f` | Experimental | 不承诺兼容 |
 | `0x80..0xff` | Vendor/Private | 必须由 profile 声明 |
 
-Service 到 Channel 的路由是固定的：Link Service 只使用 `0x00`；其他标准 Service 的 Request/Response/Event 均使用 `0x01`。`0x02..0x09` 只承载数据面 Raw Record。这样 Bluetooth/OTA/User 控制不会与各自的大数据流混合，也避免为每个新 Service 消耗 Channel ID。
+Service 到 Channel 的路由是固定的：Link Service 只使用 `0x00`；其他标准 Service 的 Request/Response/Event 均使用 `0x01`。`0x02..0x0a` 只承载数据面 Raw Record。这样 Bluetooth/OTA/User 控制不会与各自的大数据流混合，也避免为每个新 Service 消耗 Channel ID。
 
 `0x09 BLUETOOTH_HCI_ADV` 仅承载 Controller→Host 方向的 LE 广播/扫描报告 Event Record（LE Meta 子事件 `0x02/0x0b/0x0d/0x0f`），语义为 best-effort：发送方无 Credit 时就地丢弃报告而不是背压；接收方即使丢弃 payload 也必须归还 Credit。其余 HCI（Command Complete/Status、连接事件、SM、ACL 等）必须走 `0x04 BLUETOOTH_HCI` 可靠通道。该拆分保证可靠 HCI 事件不会在共享流水线中排在广播泛洪之后（控制面 ack 的队头阻塞上界由 `0x09` 的 Credit 窗口限定）。`0x09` 由 Host 在 HelloRequest `channels` 中声明、Coprocessor 在 HelloResponse 中授予 Credit 后启用；未协商时报告退回 `0x04` 旧行为。
 
@@ -66,7 +67,7 @@ RPC Envelope 固定 16 字节，紧接其后的 payload 才是 protobuf：
 
 聚合 Frame 内每条 Record 使用 8 字节头：`record_type:u8, flags:u8, header_size:u16, payload_size:u32`，均为 little-endian。`header_size` v1 为 8。解析器必须以两个长度进行越界检查，并允许跳过未知 `record_type`。
 
-- Ethernet Record type `1`：payload 是完整 L2 frame，从目的 MAC 开始，包含 VLAN/EAPOL；不含 FCS。Channel 决定 STA/AP interface。协商上限不得小于 1514 才能声明标准 MTU 1500。
+- Ethernet Record type `1`：payload 是完整 L2 frame，从目的 MAC 开始，包含 VLAN/EAPOL；不含 FCS。Channel 决定接口：`0x02`/`0x03` 为 Wi-Fi STA/AP，`0x0a ETHERNET_ETH` 为有线以太网接口，三者复用完全相同的 Record 语义与 per-record Credit 记账。协商上限不得小于 1514 才能声明标准 MTU 1500。
 - HCI Record type 为 H4 type：1 Command、2 ACL、3 SCO、4 Event、5 ISO；payload 不包含 H4 type octet。
 - OTA Record type `1`：8 字节 Record Header 后依次为 `transfer_id:u32, offset:u64, data_size:u16, flags:u16, data`。
 - User Record type `1`：依次为 `endpoint_id:u32, message_type:u32, flags:u32, message_size:u32, message bytes`，允许跨 Frame 分片。

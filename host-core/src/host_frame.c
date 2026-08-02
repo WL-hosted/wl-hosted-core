@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "bluetooth.pb.h"
+#include "eth.pb.h"
 #include "link.pb.h"
 #include "user_passthrough.pb.h"
 #include "wifi.pb.h"
@@ -24,16 +25,20 @@ void reset_ethernet_rx_credits(wlh_host_t *host) {
 }
 
 bool flush_ethernet_rx_credits(wlh_host_t *host) {
+    static const uint8_t channels[3] = {
+        WLH_CHANNEL_ETHERNET_STA,
+        WLH_CHANNEL_ETHERNET_AP,
+        WLH_CHANNEL_ETHERNET_ETH,
+    };
     uint64_t current = now_ms(host);
     bool due = host->ethernet_rx_credit_due_ms != 0u &&
                current >= host->ethernet_rx_credit_due_ms;
     bool retry = false;
     size_t index;
 
-    for (index = 0u; index < 2u; ++index) {
+    for (index = 0u; index < 3u; ++index) {
         uint32_t units = host->ethernet_rx_pending_credit[index];
-        uint8_t channel =
-            index == 0u ? WLH_CHANNEL_ETHERNET_STA : WLH_CHANNEL_ETHERNET_AP;
+        uint8_t channel = channels[index];
         if (units == 0u || (units < WLH_ETHERNET_CREDIT_BATCH && !due))
             continue;
         if (send_credit_update(host, channel, units) == WLH_HOST_OK)
@@ -42,7 +47,8 @@ bool flush_ethernet_rx_credits(wlh_host_t *host) {
             retry = true;
     }
     if (host->ethernet_rx_pending_credit[0] == 0u &&
-        host->ethernet_rx_pending_credit[1] == 0u)
+        host->ethernet_rx_pending_credit[1] == 0u &&
+        host->ethernet_rx_pending_credit[2] == 0u)
         host->ethernet_rx_credit_due_ms = 0u;
     else
         host->ethernet_rx_credit_due_ms =
@@ -53,7 +59,7 @@ bool flush_ethernet_rx_credits(wlh_host_t *host) {
 static void accumulate_ethernet_rx_credit(
     wlh_host_t *host, uint8_t channel, uint32_t units
 ) {
-    size_t index = channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
+    size_t index = ethernet_channel_index(channel);
     uint32_t old = host->ethernet_rx_pending_credit[index];
     host->ethernet_rx_pending_credit[index] =
         UINT32_MAX - old < units ? UINT32_MAX : old + units;
@@ -134,7 +140,8 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
     if (header.channel == WLH_CHANNEL_OTA_STREAM)
         return process_ota_frame(host, frame_payload, frame_payload_size);
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
-        header.channel == WLH_CHANNEL_ETHERNET_AP) {
+        header.channel == WLH_CHANNEL_ETHERNET_AP ||
+        header.channel == WLH_CHANNEL_ETHERNET_ETH) {
         bool dispatch_failed = false;
         bool payload_valid = frame_payload_size != 0u;
         wlh_raw_record_iterator_t iterator;
@@ -163,17 +170,29 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
                 if (record.record_type != 1u) {
                     continue;
                 }
-                if (!dispatch_event(
-                        host,
-                        header.channel == WLH_CHANNEL_ETHERNET_STA
-                            ? WLH_HOST_EVENT_ETHERNET_STA_RX
-                            : WLH_HOST_EVENT_ETHERNET_AP_RX,
-                        0u,
-                        0u,
-                        record.payload,
-                        record.payload_size
-                    )) {
-                    dispatch_failed = true;
+                {
+                    wlh_host_event_kind_t rx_event;
+                    switch (header.channel) {
+                    case WLH_CHANNEL_ETHERNET_STA:
+                        rx_event = WLH_HOST_EVENT_ETHERNET_STA_RX;
+                        break;
+                    case WLH_CHANNEL_ETHERNET_AP:
+                        rx_event = WLH_HOST_EVENT_ETHERNET_AP_RX;
+                        break;
+                    default:
+                        rx_event = WLH_HOST_EVENT_ETHERNET_ETH_RX;
+                        break;
+                    }
+                    if (!dispatch_event(
+                            host,
+                            rx_event,
+                            0u,
+                            0u,
+                            record.payload,
+                            record.payload_size
+                        )) {
+                        dispatch_failed = true;
+                    }
                 }
             }
         }
@@ -300,6 +319,37 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
             dispatch_event(
                 host,
                 WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED,
+                envelope.service_id,
+                envelope.method_id,
+                (const uint8_t *)&event,
+                sizeof(event)
+            );
+            return WLH_HOST_OK;
+        }
+
+        if (envelope.kind == WLH_RPC_KIND_EVENT &&
+            envelope.service_id == WLH_SERVICE_ETH &&
+            envelope.method_id == WLH_ETH_EVENT_LINK_STATE_CHANGED) {
+            wlh_protocol_v1_EthLinkStateChangedEvent decoded =
+                wlh_protocol_v1_EthLinkStateChangedEvent_init_zero;
+            pb_istream_t stream = pb_istream_from_buffer(payload, payload_size);
+            wlh_host_eth_link_state_event_t event;
+            if (!pb_decode(
+                    &stream,
+                    wlh_protocol_v1_EthLinkStateChangedEvent_fields,
+                    &decoded
+                ) ||
+                (uint32_t)decoded.link_state > WLH_HOST_ETH_LINK_STATE_UP ||
+                (uint32_t)decoded.speed > WLH_HOST_ETH_SPEED_1000M ||
+                (uint32_t)decoded.duplex > WLH_HOST_ETH_DUPLEX_FULL)
+                return WLH_HOST_PROTOCOL_ERROR;
+            memset(&event, 0, sizeof(event));
+            event.link_state = (wlh_host_eth_link_state_t)decoded.link_state;
+            event.speed = (wlh_host_eth_speed_t)decoded.speed;
+            event.duplex = (wlh_host_eth_duplex_t)decoded.duplex;
+            dispatch_event(
+                host,
+                WLH_HOST_EVENT_ETH_LINK_STATE_CHANGED,
                 envelope.service_id,
                 envelope.method_id,
                 (const uint8_t *)&event,

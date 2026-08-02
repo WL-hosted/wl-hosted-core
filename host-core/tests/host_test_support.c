@@ -553,6 +553,24 @@ void on_bluetooth_info(
         memset(&fixture->bt_info, 0, sizeof(fixture->bt_info));
 }
 
+void on_eth_info(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t domain,
+    int16_t status,
+    const wlh_host_eth_info_t *info
+) {
+    fixture_t *fixture = context;
+    (void)domain;
+    (void)status;
+    fixture->eth_info_callbacks++;
+    fixture->eth_info_result = result;
+    if (info != NULL)
+        fixture->eth_info = *info;
+    else
+        memset(&fixture->eth_info, 0, sizeof(fixture->eth_info));
+}
+
 void fixture_init(fixture_t *fixture) {
     wlh_host_config_t config;
     memset(fixture, 0, sizeof(*fixture));
@@ -759,6 +777,55 @@ void establish_ready_bluetooth(fixture_t *fixture) {
     wait_for_state(fixture, WLH_HOST_STATE_NEGOTIATING);
     wait_for_tx(fixture, 1u);
     send_bluetooth_hello(fixture, 42u);
+}
+
+/* Hello response advertising the Wired Ethernet service and data channel,
+   with two initial ETH credits. */
+void establish_ready_eth(fixture_t *fixture) {
+    wlh_protocol_v1_HelloResponse hello =
+        wlh_protocol_v1_HelloResponse_init_zero;
+    uint8_t payload[1024];
+    uint8_t frame[4096];
+    pb_ostream_t stream = pb_ostream_from_buffer(payload, sizeof(payload));
+    size_t frame_size;
+    assert(wlh_host_start(&fixture->host) == WLH_HOST_OK);
+    wait_for_state(fixture, WLH_HOST_STATE_NEGOTIATING);
+    wait_for_tx(fixture, 1u);
+    hello.has_selected_protocol = true;
+    hello.selected_protocol.major = 1u;
+    hello.session_id = 42u;
+    hello.boot_id = 99u;
+    hello.max_frame_size = 4096u;
+    hello.alignment = 1u;
+    hello.checksum_mode = wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_SUM32;
+
+    hello.services_count = 1u;
+    hello.services[0].service_id = WLH_SERVICE_ETH;
+    hello.services[0].major = 1u;
+    hello.channels_count = 1u;
+    hello.channels[0].channel_id = WLH_CHANNEL_ETHERNET_ETH;
+    hello.channels[0].max_frame_payload = 1600u;
+
+    hello.initial_credits_count = 2u;
+    hello.initial_credits[0] =
+        (wlh_protocol_v1_InitialCredit){WLH_CHANNEL_CONTROL_RPC, 8u, 1u};
+    hello.initial_credits[1] =
+        (wlh_protocol_v1_InitialCredit){WLH_CHANNEL_ETHERNET_ETH, 2u, 1u};
+    assert(pb_encode(&stream, wlh_protocol_v1_HelloResponse_fields, &hello));
+    frame_size = make_rpc_frame(
+        frame,
+        0u,
+        0u,
+        WLH_SERVICE_LINK,
+        WLH_LINK_METHOD_HELLO,
+        1u,
+        WLH_RPC_KIND_RESPONSE,
+        0,
+        payload,
+        stream.bytes_written
+    );
+    assert(wlh_host_on_frame(&fixture->host, frame, frame_size) == WLH_HOST_OK);
+    wait_for_state(fixture, WLH_HOST_STATE_READY);
 }
 
 size_t make_hci_channel_frame(

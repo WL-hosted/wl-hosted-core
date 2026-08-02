@@ -14,5 +14,7 @@ void test_bluetooth_not_negotiated(void);
 void test_bluetooth_lifecycle_and_info(void);
 void test_bluetooth_hci_channel(void);
 void test_bluetooth_adv_channel(void);
+void test_eth_get_info_and_link_event(void);
+void test_eth_data_channel(void);
 
 #endif

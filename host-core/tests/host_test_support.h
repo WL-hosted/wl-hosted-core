@@ -15,6 +15,7 @@
 #include "bluetooth.pb.h"
 #include "common.pb.h"
 #include "device_info.pb.h"
+#include "eth.pb.h"
 #include "io.pb.h"
 #include "kv.pb.h"
 #include "link.pb.h"
@@ -60,6 +61,9 @@ typedef struct fixture {
     unsigned bt_info_callbacks;
     wlh_host_result_t bt_info_result;
     wlh_bluetooth_controller_info_t bt_info;
+    unsigned eth_info_callbacks;
+    wlh_host_result_t eth_info_result;
+    wlh_host_eth_info_t eth_info;
     bool defer_start;
     bool reject_executor;
     wlh_transport_lifecycle_complete_fn start_completion;
@@ -118,6 +122,13 @@ void on_bluetooth_info(
     int16_t status,
     const wlh_bluetooth_controller_info_t *info
 );
+void on_eth_info(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t domain,
+    int16_t status,
+    const wlh_host_eth_info_t *info
+);
 void fixture_init(fixture_t *fixture);
 void wait_milliseconds(uint32_t milliseconds);
 void wait_for_state(fixture_t *fixture, wlh_host_state_t state);
@@ -138,6 +149,7 @@ size_t make_rpc_frame(
 void establish_ready(fixture_t *fixture);
 void send_bluetooth_hello(fixture_t *fixture, uint32_t session_id);
 void establish_ready_bluetooth(fixture_t *fixture);
+void establish_ready_eth(fixture_t *fixture);
 size_t make_hci_channel_frame(
     uint8_t *output,
     uint8_t channel,

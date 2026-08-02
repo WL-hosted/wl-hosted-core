@@ -279,8 +279,7 @@ static void host_worker(void *argument) {
             } else if (job.kind == WLH_HOST_JOB_ETHERNET_TX) {
                 wlh_host_data_job_t *data = job.payload;
                 wlh_host_result_t result;
-                uint8_t ethernet_index =
-                    data->channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
+                uint8_t ethernet_index = ethernet_channel_index(data->channel);
                 if (host->ethernet_tx_queued[ethernet_index] > 0u)
                     --host->ethernet_tx_queued[ethernet_index];
                 result = send_payload_frame_units(

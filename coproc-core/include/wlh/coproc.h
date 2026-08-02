@@ -99,8 +99,9 @@ typedef struct wlh_coproc_port {
     wlh_coproc_submit_tx_fn submit_tx;
     /* Must remain nonblocking. Returning PENDING transfers one received
      * record to the backend until wlh_coproc_ethernet_rx_complete is called. */
-    wlh_coproc_ethernet_rx_fn ethernet_rx;
+    wlh_coproc_ethernet_rx_fn ethernet_sta_rx;
     wlh_coproc_ethernet_rx_fn ethernet_ap_rx;
+    wlh_coproc_ethernet_rx_fn ethernet_eth_rx;
 } wlh_coproc_port_t;
 
 typedef uint8_t *(*wlh_coproc_buffer_alloc_fn)(void *context, size_t size);
@@ -304,6 +305,42 @@ typedef struct wlh_coproc_user_passthrough_ops {
     wlh_coproc_user_message_fn on_message;
 } wlh_coproc_user_passthrough_ops_t;
 
+/* Wired Ethernet service (optional). Values match the EthLinkState/EthSpeed/
+ * EthDuplex wire enums, but the adapter contract stays free of protobuf
+ * types. */
+typedef enum wlh_coproc_eth_link_state {
+    WLH_COPROC_ETH_LINK_STATE_DOWN = 1,
+    WLH_COPROC_ETH_LINK_STATE_UP = 2
+} wlh_coproc_eth_link_state_t;
+typedef enum wlh_coproc_eth_speed {
+    WLH_COPROC_ETH_SPEED_UNSPECIFIED = 0,
+    WLH_COPROC_ETH_SPEED_10M = 1,
+    WLH_COPROC_ETH_SPEED_100M = 2,
+    WLH_COPROC_ETH_SPEED_1000M = 3
+} wlh_coproc_eth_speed_t;
+typedef enum wlh_coproc_eth_duplex {
+    WLH_COPROC_ETH_DUPLEX_UNSPECIFIED = 0,
+    WLH_COPROC_ETH_DUPLEX_HALF = 1,
+    WLH_COPROC_ETH_DUPLEX_FULL = 2
+} wlh_coproc_eth_duplex_t;
+
+/* Interface information reported by the backend after GET_INFO. */
+typedef struct wlh_coproc_eth_info {
+    wlh_coproc_eth_link_state_t link_state;
+    uint8_t mac_address[6];
+    wlh_coproc_eth_speed_t speed;
+    wlh_coproc_eth_duplex_t duplex;
+} wlh_coproc_eth_info_t;
+
+/* Nonblocking submission; the result arrives via
+ * wlh_coproc_eth_info_ready() with the same operation_id. */
+typedef int (*wlh_coproc_eth_get_info_fn)(void *context, uint32_t operation_id);
+
+typedef struct wlh_coproc_eth_ops {
+    void *context;
+    wlh_coproc_eth_get_info_fn get_info;
+} wlh_coproc_eth_ops_t;
+
 /* Bluetooth Controller service (optional). All lifecycle operations are
  * nonblocking submissions; results arrive via
  * wlh_coproc_bluetooth_operation_complete() /
@@ -438,6 +475,7 @@ typedef struct wlh_coproc_config {
     wlh_coproc_adc_ops_t adc;
     wlh_coproc_kv_ops_t kv;
     wlh_coproc_user_passthrough_ops_t user_passthrough;
+    wlh_coproc_eth_ops_t eth;
     wlh_coproc_bluetooth_ops_t bluetooth;
     wlh_coproc_ota_ops_t ota;
     wlh_coproc_buffer_ops_t buffers;
@@ -484,8 +522,9 @@ typedef struct wlh_coproc {
      * making the Wi-Fi callback contend on state_mutex. */
     wlh_osal_semaphore_t ethernet_tx_slots;
     /* Host->backend records accepted asynchronously. Access is serialized by
-     * state_mutex; the worker coalesces each channel into one CreditUpdate. */
-    uint32_t ethernet_rx_pending_credit[2];
+     * state_mutex; the worker coalesces each channel into one CreditUpdate.
+     * Interface index: 0=STA, 1=AP, 2=ETH. */
+    uint32_t ethernet_rx_pending_credit[3];
     uint32_t ethernet_rx_pending_failures;
     bool ethernet_rx_wake_queued;
     bool worker_started;
@@ -504,6 +543,13 @@ typedef struct wlh_coproc {
         uint32_t request_id;
         uint16_t method_id;
     } bluetooth_pending;
+    /* Outstanding ETH GET_INFO backend submission and its RPC request. */
+    struct {
+        bool active;
+        uint32_t operation_id;
+        uint32_t session_id;
+        uint32_t request_id;
+    } eth_pending;
     /* Wire BluetoothControllerState value tracked by the core state machine. */
     uint32_t bluetooth_state;
     /* Controller->Host HCI jobs queued but not yet sent; reserves credit. */
@@ -600,6 +646,9 @@ wlh_coproc_result_t wlh_coproc_ethernet_sta_send(
 wlh_coproc_result_t wlh_coproc_ethernet_ap_send(
     wlh_coproc_t *coproc, const uint8_t *frame, size_t size
 );
+wlh_coproc_result_t wlh_coproc_ethernet_eth_send(
+    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+);
 /* Completes records previously accepted with ETHERNET_RX_PENDING. Completion
  * is nonblocking from the caller's perspective apart from the Core's short
  * state mutex. Credits are coalesced on the Core task before transmission.
@@ -649,6 +698,23 @@ wlh_coproc_result_t wlh_coproc_bluetooth_hci_send(
 /* Moves the controller into the ERROR state and emits STATE_CHANGED. */
 wlh_coproc_result_t wlh_coproc_bluetooth_fatal_error(
     wlh_coproc_t *coproc, uint32_t reason
+);
+
+/* Completion for ETH GET_INFO. Nonblocking ingress, callable from any task
+ * context. `info` may be NULL only when backend_status is nonzero. */
+wlh_coproc_result_t wlh_coproc_eth_info_ready(
+    wlh_coproc_t *coproc,
+    uint32_t operation_id,
+    int backend_status,
+    const wlh_coproc_eth_info_t *info
+);
+/* Emit an ETH LINK_STATE_CHANGED event. Nonblocking ingress, callable from
+ * any task context. */
+wlh_coproc_result_t wlh_coproc_eth_link_state_changed(
+    wlh_coproc_t *coproc,
+    wlh_coproc_eth_link_state_t link_state,
+    wlh_coproc_eth_speed_t speed,
+    wlh_coproc_eth_duplex_t duplex
 );
 
 /* OTA completions. All are nonblocking ingress callable from any task context;

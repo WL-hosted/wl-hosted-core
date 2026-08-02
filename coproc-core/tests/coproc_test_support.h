@@ -16,6 +16,7 @@
 #include "common.pb.h"
 #include "device_info.pb.h"
 #include "diagnostics.pb.h"
+#include "eth.pb.h"
 #include "io.pb.h"
 #include "kv.pb.h"
 #include "link.pb.h"
@@ -39,12 +40,12 @@ typedef struct fixture {
     size_t sent_size;
     uint64_t now;
     int initialized;
-    size_t ethernet_size;
+    size_t ethernet_sta_size;
     size_t ethernet_ap_size;
-    unsigned ethernet_rx_calls;
-    uint32_t ethernet_rx_session_id;
-    uint8_t ethernet_rx_channel;
-    wlh_coproc_ethernet_rx_result_t ethernet_rx_result;
+    unsigned ethernet_sta_rx_calls;
+    uint32_t ethernet_sta_rx_session_id;
+    uint8_t ethernet_sta_rx_channel;
+    wlh_coproc_ethernet_rx_result_t ethernet_sta_rx_result;
     unsigned sent_count;
     uint8_t sent_log[16][4096];
     size_t sent_log_size[16];
@@ -93,6 +94,15 @@ typedef struct fixture {
     uint8_t bt_last_hci[64];
     size_t bt_last_hci_size;
     unsigned bt_tx_ready_calls;
+    unsigned eth_get_infos;
+    uint32_t eth_last_operation_id;
+    int eth_submit_status;
+    wlh_coproc_eth_info_t eth_info;
+    unsigned eth_rx_calls;
+    uint32_t eth_rx_session_id;
+    uint8_t eth_rx_channel;
+    size_t eth_rx_size;
+    wlh_coproc_ethernet_rx_result_t eth_rx_result;
     unsigned ota_begins;
     unsigned ota_writes;
     unsigned ota_finalizes;
@@ -137,7 +147,7 @@ void check_raw_record(
     const uint8_t *expected,
     size_t expected_size
 );
-wlh_coproc_ethernet_rx_result_t ethernet_rx(
+wlh_coproc_ethernet_rx_result_t ethernet_sta_rx(
     void *context,
     uint32_t session_id,
     uint8_t channel,
@@ -180,6 +190,17 @@ int bt_hci_send(
     void *context, uint8_t h4_type, const uint8_t *payload, size_t payload_size
 );
 void bt_hci_tx_ready(void *context);
+int eth_get_info(void *context, uint32_t operation_id);
+wlh_coproc_ethernet_rx_result_t ethernet_eth_rx(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
+);
+void prepare_ready_eth_core(
+    fixture_t *fixture, wlh_coproc_t *core, bool with_backend
+);
 void wait_milliseconds(uint32_t milliseconds);
 void wait_for_state(wlh_coproc_t *core, wlh_coproc_state_t state);
 void wait_for_sent(fixture_t *fixture, unsigned count);

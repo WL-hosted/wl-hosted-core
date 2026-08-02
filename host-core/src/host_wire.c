@@ -17,7 +17,8 @@ static void tx_complete(
     wlh_host_t *host = completion_context;
     bool ethernet_frame = size >= WLH_FRAME_HEADER_SIZE &&
                           (frame[4] == WLH_CHANNEL_ETHERNET_STA ||
-                           frame[4] == WLH_CHANNEL_ETHERNET_AP);
+                           frame[4] == WLH_CHANNEL_ETHERNET_AP ||
+                           frame[4] == WLH_CHANNEL_ETHERNET_ETH);
     host->config.buffers.free(host->config.buffers.context, frame);
     if (ethernet_frame) {
         (void)host->config.osal.semaphore_give(

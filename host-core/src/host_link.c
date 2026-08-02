@@ -40,7 +40,7 @@ wlh_host_result_t send_hello(wlh_host_t *host) {
     hello->checksum_modes[1] =
         wlh_protocol_v1_ChecksumMode_CHECKSUM_MODE_CRC32C;
     hello->max_rpc_payload = WLH_HOST_PROTOBUF_LIMIT;
-    hello->services_count = 5u;
+    hello->services_count = 6u;
     // clang-format off
     hello->services[0] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_LINK, 1u, 0u, 0u,
@@ -60,8 +60,11 @@ wlh_host_result_t send_hello(wlh_host_t *host) {
     hello->services[4] = (wlh_protocol_v1_ServiceVersionRange){
         WLH_SERVICE_OTA, 1u, 0u, 0u,
     };
+    hello->services[5] = (wlh_protocol_v1_ServiceVersionRange){
+        WLH_SERVICE_ETH, 1u, 0u, 0u,
+    };
 
-    hello->channels_count = 7u;
+    hello->channels_count = 8u;
     hello->channels[0] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_LINK_CONTROL, WLH_HOST_PROTOBUF_LIMIT, 0u, 1u, 0u,
     };
@@ -87,6 +90,9 @@ wlh_host_result_t send_hello(wlh_host_t *host) {
     };
     hello->channels[6] = (wlh_protocol_v1_ChannelCapability){
         WLH_CHANNEL_OTA_STREAM, 4096u, 0u, 1u, 0u,
+    };
+    hello->channels[7] = (wlh_protocol_v1_ChannelCapability){
+        WLH_CHANNEL_ETHERNET_ETH, 1600u, 0u, 1u, 0u,
     };
     // clang-format on
     memset(&envelope, 0, sizeof(envelope));

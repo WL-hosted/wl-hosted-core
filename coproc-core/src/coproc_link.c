@@ -129,6 +129,25 @@ send_hello_response(wlh_coproc_t *coproc, uint32_t request_id) {
             WLH_COPROC_OTA_INITIAL_CREDIT;
     }
 
+    coproc->tx_credit[WLH_CHANNEL_ETHERNET_ETH] = 0u;
+    if (eth_backend_present(coproc)) {
+        response->services[service_index].service_id = WLH_SERVICE_ETH;
+        response->services[service_index].major = 1u;
+        ++service_index;
+        response->channels[channel_index].channel_id = WLH_CHANNEL_ETHERNET_ETH;
+        response->channels[channel_index].max_frame_payload = 1600u;
+        response->channels[channel_index].alignment = 1u;
+        ++channel_index;
+        response->initial_credits[credit_index].channel_id =
+            WLH_CHANNEL_ETHERNET_ETH;
+        response->initial_credits[credit_index].units =
+            coproc->config.initial_credit;
+        response->initial_credits[credit_index].unit_bytes = 1u;
+        ++credit_index;
+        coproc->tx_credit[WLH_CHANNEL_ETHERNET_ETH] =
+            coproc->config.initial_credit;
+    }
+
     response->services_count = (pb_size_t)service_index;
     response->channels_count = (pb_size_t)channel_index;
     response->initial_credits_count = (pb_size_t)credit_index;
@@ -225,6 +244,7 @@ WLH_NOINLINE wlh_coproc_result_t handle_hello_request(
         sizeof(coproc->wifi_initialize_pending)
     );
     memset(&coproc->bluetooth_pending, 0, sizeof(coproc->bluetooth_pending));
+    memset(&coproc->eth_pending, 0, sizeof(coproc->eth_pending));
     coproc->bluetooth_state = BT_STATE_UNSPECIFIED;
     coproc->bluetooth_tx_inflight = 0u;
     coproc->bluetooth_adv_tx_inflight = 0u;

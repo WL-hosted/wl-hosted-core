@@ -57,5 +57,7 @@ wlh.protocol.v1.DeviceInfoResponse.mcu_model max_size:33
 wlh.protocol.v1.DeviceInfoResponse.uid max_size:32
 wlh.protocol.v1.DeviceInfoResponse.board_profile max_size:65
 
+wlh.protocol.v1.EthInfo.mac_address max_size:6
+
 wlh.protocol.v1.UserMessageSendRequest.payload max_size:512
 wlh.protocol.v1.UserMessageResultEvent.payload max_size:512

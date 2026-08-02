@@ -23,20 +23,24 @@ static int ethernet_channel_index(uint8_t channel) {
         return 0;
     if (channel == WLH_CHANNEL_ETHERNET_AP)
         return 1;
+    if (channel == WLH_CHANNEL_ETHERNET_ETH)
+        return 2;
     return -1;
 }
 
 void reset_ethernet_rx_completions(wlh_coproc_t *coproc) {
     coproc->ethernet_rx_pending_credit[0] = 0u;
     coproc->ethernet_rx_pending_credit[1] = 0u;
+    coproc->ethernet_rx_pending_credit[2] = 0u;
     coproc->ethernet_rx_pending_failures = 0u;
     coproc->ethernet_rx_wake_queued = false;
 }
 
 bool flush_ethernet_rx_completions(wlh_coproc_t *coproc) {
-    static const uint8_t channels[2] = {
+    static const uint8_t channels[3] = {
         WLH_CHANNEL_ETHERNET_STA,
         WLH_CHANNEL_ETHERNET_AP,
+        WLH_CHANNEL_ETHERNET_ETH,
     };
     bool retry = false;
     size_t index;
@@ -47,7 +51,7 @@ bool flush_ethernet_rx_completions(wlh_coproc_t *coproc) {
             coproc->ethernet_rx_pending_failures;
         coproc->ethernet_rx_pending_failures = 0u;
     }
-    for (index = 0u; index < 2u; ++index) {
+    for (index = 0u; index < 3u; ++index) {
         uint32_t units = coproc->ethernet_rx_pending_credit[index];
         if (units == 0u)
             continue;
@@ -189,7 +193,8 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
     }
 
     if (header.channel == WLH_CHANNEL_ETHERNET_STA ||
-        header.channel == WLH_CHANNEL_ETHERNET_AP) {
+        header.channel == WLH_CHANNEL_ETHERNET_AP ||
+        header.channel == WLH_CHANNEL_ETHERNET_ETH) {
         bool payload_valid = payload_size != 0u;
         wlh_raw_record_iterator_t iterator;
         wlh_raw_record_view_t record;
@@ -208,10 +213,18 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
         }
         payload_valid = payload_valid && record_result == WLH_WIRE_END;
         if (payload_valid) {
-            wlh_coproc_ethernet_rx_fn receive =
-                header.channel == WLH_CHANNEL_ETHERNET_STA
-                    ? coproc->config.port.ethernet_rx
-                    : coproc->config.port.ethernet_ap_rx;
+            wlh_coproc_ethernet_rx_fn receive;
+            switch (header.channel) {
+            case WLH_CHANNEL_ETHERNET_STA:
+                receive = coproc->config.port.ethernet_sta_rx;
+                break;
+            case WLH_CHANNEL_ETHERNET_AP:
+                receive = coproc->config.port.ethernet_ap_rx;
+                break;
+            default:
+                receive = coproc->config.port.ethernet_eth_rx;
+                break;
+            }
             (void)wlh_raw_record_iterator_init(
                 &iterator, payload, payload_size
             );

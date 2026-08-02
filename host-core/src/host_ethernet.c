@@ -14,6 +14,14 @@
 #include <pb_decode.h>
 #include <pb_encode.h>
 
+uint8_t ethernet_channel_index(uint8_t channel) {
+    if (channel == WLH_CHANNEL_ETHERNET_AP)
+        return 1u;
+    if (channel == WLH_CHANNEL_ETHERNET_ETH)
+        return 2u;
+    return 0u;
+}
+
 static wlh_host_result_t ethernet_send(
     wlh_host_t *host,
     uint8_t channel,
@@ -32,7 +40,7 @@ static wlh_host_result_t ethernet_send(
             WLH_OSAL_NO_WAIT
         ) != 0)
         return WLH_HOST_PENDING_FULL;
-    ethernet_index = channel == WLH_CHANNEL_ETHERNET_STA ? 0u : 1u;
+    ethernet_index = ethernet_channel_index(channel);
     record = host->config.buffers.alloc(
         host->config.buffers.context, sizeof(wlh_host_data_job_t) + 8u + size
     );
@@ -134,4 +142,10 @@ wlh_host_result_t wlh_host_ethernet_ap_send(
     wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
 ) {
     return ethernet_send(host, WLH_CHANNEL_ETHERNET_AP, ethernet_frame, size);
+}
+
+wlh_host_result_t wlh_host_ethernet_eth_send(
+    wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+) {
+    return ethernet_send(host, WLH_CHANNEL_ETHERNET_ETH, ethernet_frame, size);
 }

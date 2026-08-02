@@ -143,7 +143,7 @@ Host 调用 `wlh_host_wifi_connect()` 后，要么超时，要么收到 DISCONNE
 ### 检查项
 
 1. Host 是否调用 `wlh_host_ethernet_sta_send()` 发送？
-2. Coprocessor 的 `ethernet_rx` 是否正确把帧交给网络栈？
+2. Coprocessor 的 `ethernet_sta_rx` 是否正确把帧交给网络栈？
 3. 数据面是否走 `WLH_CHANNEL_ETHERNET_STA`，而不是 `CONTROL_RPC`？
 4. MTU 是否超过协商的 `max_frame_size - header_size - record_header`？
 

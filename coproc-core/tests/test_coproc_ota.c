@@ -255,7 +255,7 @@ static void prepare_ready_bt_ota_core(fixture_t *f, wlh_coproc_t *core) {
     memset(&config, 0, sizeof(config));
     config.port.context = f;
     config.port.submit_tx = submit_frame;
-    config.port.ethernet_rx = ethernet_rx;
+    config.port.ethernet_sta_rx = ethernet_sta_rx;
     config.buffers = (wlh_coproc_buffer_ops_t){f, buffer_alloc, buffer_free};
     config.osal = wlh_posix_osal_ops(&f->posix);
     config.bluetooth.context = f;

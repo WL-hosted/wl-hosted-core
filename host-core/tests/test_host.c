@@ -16,6 +16,8 @@ int main(void) {
     test_bluetooth_lifecycle_and_info();
     test_bluetooth_hci_channel();
     test_bluetooth_adv_channel();
+    test_eth_get_info_and_link_event();
+    test_eth_data_channel();
     puts("host core tests passed");
     return 0;
 }

@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package wlh.protocol.v1;
+
+enum EthLinkState {
+  ETH_LINK_STATE_UNSPECIFIED = 0;
+  ETH_LINK_STATE_DOWN = 1;
+  ETH_LINK_STATE_UP = 2;
+}
+
+enum EthSpeed {
+  ETH_SPEED_UNSPECIFIED = 0;
+  ETH_SPEED_10M = 1;
+  ETH_SPEED_100M = 2;
+  ETH_SPEED_1000M = 3;
+}
+
+enum EthDuplex {
+  ETH_DUPLEX_UNSPECIFIED = 0;
+  ETH_DUPLEX_HALF = 1;
+  ETH_DUPLEX_FULL = 2;
+}
+
+message EthGetInfoRequest {}
+
+message EthInfo {
+  EthLinkState link_state = 1;
+  bytes mac_address = 2;
+  EthSpeed speed = 3;
+  EthDuplex duplex = 4;
+}
+
+message EthGetInfoResponse {
+  EthInfo info = 1;
+}
+
+message EthLinkStateChangedEvent {
+  EthLinkState link_state = 1;
+  EthSpeed speed = 2;
+  EthDuplex duplex = 3;
+}

@@ -13,6 +13,7 @@
 | `0x0007` | ADC | Optional |
 | `0x0008` | KV | Optional |
 | `0x0009` | Device Information | Optional |
+| `0x000A` | Wired Ethernet | Optional |
 | `0x000F` | User Passthrough | Optional |
 
 每个 Service 的 Method ID `0x0001..0x7fff` 为 request/response，`0x8000..0xbfff` 为标准 event，`0xc000..0xffff` 保留。RPC kind 仍是最终判据。

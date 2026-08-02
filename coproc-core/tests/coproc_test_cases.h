@@ -16,5 +16,8 @@ void test_ota_hello_with_bluetooth(void);
 void test_ota_full_flow(void);
 void test_ota_errors_idle(void);
 void test_ota_transfer_errors(void);
+void test_coproc_eth_hello_and_get_info(void);
+void test_coproc_eth_not_configured(void);
+void test_coproc_eth_data_channel(void);
 
 #endif

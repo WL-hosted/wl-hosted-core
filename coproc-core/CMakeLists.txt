@@ -19,6 +19,7 @@ add_library(wlh_coproc_core STATIC
   src/coproc_bluetooth.c
   src/coproc_diagnostics.c
   src/coproc_device_info.c
+  src/coproc_eth.c
   src/coproc_ethernet.c
   src/coproc_frame.c
   src/coproc_io.c
@@ -51,6 +52,7 @@ if(BUILD_TESTING)
     tests/test_coproc.c
     tests/test_coproc_bluetooth.c
     tests/test_coproc_device_user.c
+    tests/test_coproc_eth.c
     tests/test_coproc_link_data.c
     tests/test_coproc_ota.c
     tests/test_coproc_peripherals.c

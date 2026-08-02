@@ -19,6 +19,9 @@ int main(void) {
     test_ota_full_flow();
     test_ota_errors_idle();
     test_ota_transfer_errors();
+    test_coproc_eth_hello_and_get_info();
+    test_coproc_eth_not_configured();
+    test_coproc_eth_data_channel();
     if (failures != 0)
         return 1;
     puts("coprocessor core tests passed");

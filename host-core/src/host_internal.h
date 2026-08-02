@@ -133,6 +133,9 @@ wlh_host_result_t wlh_host_internal_send_rpc_message(
 wlh_host_result_t wlh_host_internal_send_credit_update(
     wlh_host_t *host, uint8_t channel, uint32_t units
 );
+/* Ethernet interface index for the fixed-size accounting arrays:
+ * 0=STA, 1=AP, 2=ETH. Callers only pass advertised Ethernet channels. */
+uint8_t wlh_host_internal_ethernet_channel_index(uint8_t channel);
 bool wlh_host_internal_flush_ethernet_rx_credits(wlh_host_t *host);
 void wlh_host_internal_reset_ethernet_rx_credits(wlh_host_t *host);
 wlh_host_result_t wlh_host_internal_send_hello(wlh_host_t *host);
@@ -181,6 +184,7 @@ wlh_host_result_t wlh_host_internal_process_ota_frame(
 #define send_rpc wlh_host_internal_send_rpc
 #define send_rpc_message wlh_host_internal_send_rpc_message
 #define send_credit_update wlh_host_internal_send_credit_update
+#define ethernet_channel_index wlh_host_internal_ethernet_channel_index
 #define flush_ethernet_rx_credits wlh_host_internal_flush_ethernet_rx_credits
 #define reset_ethernet_rx_credits wlh_host_internal_reset_ethernet_rx_credits
 #define send_hello wlh_host_internal_send_hello

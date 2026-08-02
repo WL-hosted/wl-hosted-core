@@ -54,7 +54,7 @@ void test_hello_wifi_and_ethernet(void) {
 
     config.port.context = &f;
     config.port.submit_tx = submit_frame;
-    config.port.ethernet_rx = ethernet_rx;
+    config.port.ethernet_sta_rx = ethernet_sta_rx;
     config.port.ethernet_ap_rx = ethernet_ap_rx;
     config.buffers = (wlh_coproc_buffer_ops_t){&f, buffer_alloc, buffer_free};
     config.osal = wlh_posix_osal_ops(&f.posix);
@@ -209,11 +209,11 @@ void test_hello_wifi_and_ethernet(void) {
         CHECK(wlh_coproc_on_frame(&core, incoming, size) == WLH_COPROC_OK);
         {
             unsigned attempt;
-            for (attempt = 0; attempt < 1000u && f.ethernet_size != 3u;
+            for (attempt = 0; attempt < 1000u && f.ethernet_sta_size != 3u;
                  ++attempt)
                 wait_milliseconds(1u);
         }
-        CHECK(f.ethernet_size == 3);
+        CHECK(f.ethernet_sta_size == 3);
         wait_for_sent(&f, sent_before + 1u);
         CHECK(
             wlh_frame_decode(
@@ -253,10 +253,10 @@ void test_hello_wifi_and_ethernet(void) {
         wlh_protocol_v1_CreditUpdate update =
             wlh_protocol_v1_CreditUpdate_init_zero;
         size_t size = 0;
-        unsigned calls_before = f.ethernet_rx_calls;
+        unsigned calls_before = f.ethernet_sta_rx_calls;
         unsigned sent_before = f.sent_count;
 
-        f.ethernet_rx_result = WLH_COPROC_ETHERNET_RX_PENDING;
+        f.ethernet_sta_rx_result = WLH_COPROC_ETHERNET_RX_PENDING;
         wlh_frame_header_init(&header, WLH_CHANNEL_ETHERNET_STA);
         header.session_id = 42u;
         CHECK(
@@ -266,12 +266,12 @@ void test_hello_wifi_and_ethernet(void) {
         );
         CHECK(wlh_coproc_on_frame(&core, incoming, size) == WLH_COPROC_OK);
         for (unsigned attempt = 0u;
-             attempt < 1000u && f.ethernet_rx_calls == calls_before;
+             attempt < 1000u && f.ethernet_sta_rx_calls == calls_before;
              ++attempt)
             wait_milliseconds(1u);
-        CHECK(f.ethernet_rx_calls == calls_before + 1u);
-        CHECK(f.ethernet_rx_session_id == 42u);
-        CHECK(f.ethernet_rx_channel == WLH_CHANNEL_ETHERNET_STA);
+        CHECK(f.ethernet_sta_rx_calls == calls_before + 1u);
+        CHECK(f.ethernet_sta_rx_session_id == 42u);
+        CHECK(f.ethernet_sta_rx_channel == WLH_CHANNEL_ETHERNET_STA);
         wait_milliseconds(5u);
         CHECK(f.sent_count == sent_before);
         CHECK(
@@ -318,7 +318,7 @@ void test_hello_wifi_and_ethernet(void) {
         CHECK(
             update.channel_id == WLH_CHANNEL_ETHERNET_STA && update.units == 32u
         );
-        f.ethernet_rx_result = WLH_COPROC_ETHERNET_RX_COMPLETE;
+        f.ethernet_sta_rx_result = WLH_COPROC_ETHERNET_RX_COMPLETE;
     }
     {
         uint8_t raw[11] = {1, 0, 8, 0, 3, 0, 0, 0, 4, 5, 6};

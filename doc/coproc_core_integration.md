@@ -39,12 +39,12 @@ void wlh_coproc_get_diagnostics(const wlh_coproc_t *coproc, wlh_coproc_diagnosti
 typedef struct wlh_coproc_port {
     void *context;
     wlh_coproc_submit_tx_fn submit_tx;
-    wlh_coproc_ethernet_rx_fn ethernet_rx;
+    wlh_coproc_ethernet_rx_fn ethernet_sta_rx;
 } wlh_coproc_port_t;
 ```
 
 - `submit_tx`：Core 把待发送帧交给 transport。
-- `ethernet_rx`：Core 收到 Ethernet STA 帧后，通过该回调交给网络栈；必须是非阻塞的拷贝/入队。
+- `ethernet_sta_rx`：Core 收到 Ethernet STA 帧后，通过该回调交给网络栈；必须是非阻塞的拷贝/入队。
 
 ### wifi
 
@@ -266,7 +266,7 @@ Coprocessor 收到 Ethernet 帧后：
 wlh_coproc_ethernet_sta_send(coproc, ethernet_frame, size);
 ```
 
-Core 会封装成 Frame 并通过 `submit_tx` 发送给 Host。Host 发送给 Coprocessor 的 Ethernet 帧则通过 `ethernet_rx` 回调交给后端网络栈。
+Core 会封装成 Frame 并通过 `submit_tx` 发送给 Host。Host 发送给 Coprocessor 的 Ethernet 帧则通过 `ethernet_sta_rx` 回调交给后端网络栈。
 
 ## 用户透传
 
@@ -305,7 +305,7 @@ wlh_coproc_get_diagnostics(coproc, &diag);
 - 忘记在初始化完成后调用 `wlh_coproc_wifi_initialized()`。
 - 在 ISR 中调用 `wlh_coproc_wifi_connected()` 等注入 API。
 - `submit_tx` 成功后未在 tx_complete 中释放 buffer。
-- `ethernet_rx` 中直接处理完整网络栈路径，导致 Core task 阻塞。
+- `ethernet_sta_rx` 中直接处理完整网络栈路径，导致 Core task 阻塞。
 - 在 `bluetooth.hci_send` 中同步等待硬件发送完成。
 - 收到畸形 HCI 后未调用 `wlh_coproc_bluetooth_fatal_error()` 而继续发送错误数据。
 

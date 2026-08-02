@@ -179,7 +179,7 @@ wlh_coproc_config_t config = {0};
 
 config.port.context = &my_port;
 config.port.submit_tx = my_coproc_submit_tx;
-config.port.ethernet_rx = my_ethernet_rx;
+config.port.ethernet_sta_rx = my_ethernet_rx;
 
 config.wifi.context = &my_wifi;
 config.wifi.initialize = my_wifi_initialize;

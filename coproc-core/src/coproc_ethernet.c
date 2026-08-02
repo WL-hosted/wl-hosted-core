@@ -93,3 +93,9 @@ wlh_coproc_result_t wlh_coproc_ethernet_ap_send(
 ) {
     return ethernet_send(coproc, WLH_CHANNEL_ETHERNET_AP, frame, size);
 }
+
+wlh_coproc_result_t wlh_coproc_ethernet_eth_send(
+    wlh_coproc_t *coproc, const uint8_t *frame, size_t size
+) {
+    return ethernet_send(coproc, WLH_CHANNEL_ETHERNET_ETH, frame, size);
+}

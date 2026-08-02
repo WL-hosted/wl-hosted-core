@@ -106,7 +106,7 @@ void check_raw_record(
     CHECK(memcmp(payload + 8u, expected, expected_size) == 0);
 }
 
-wlh_coproc_ethernet_rx_result_t ethernet_rx(
+wlh_coproc_ethernet_rx_result_t ethernet_sta_rx(
     void *context,
     uint32_t session_id,
     uint8_t channel,
@@ -115,11 +115,11 @@ wlh_coproc_ethernet_rx_result_t ethernet_rx(
 ) {
     (void)frame;
     fixture_t *fixture = context;
-    fixture->ethernet_size = size;
-    fixture->ethernet_rx_session_id = session_id;
-    fixture->ethernet_rx_channel = channel;
-    ++fixture->ethernet_rx_calls;
-    return fixture->ethernet_rx_result;
+    fixture->ethernet_sta_size = size;
+    fixture->ethernet_sta_rx_session_id = session_id;
+    fixture->ethernet_sta_rx_channel = channel;
+    ++fixture->ethernet_sta_rx_calls;
+    return fixture->ethernet_sta_rx_result;
 }
 wlh_coproc_ethernet_rx_result_t ethernet_ap_rx(
     void *context,
@@ -281,6 +281,79 @@ void bt_hci_tx_ready(void *context) {
     ++((fixture_t *)context)->bt_tx_ready_calls;
 }
 
+int eth_get_info(void *context, uint32_t operation_id) {
+    fixture_t *fixture = context;
+    ++fixture->eth_get_infos;
+    fixture->eth_last_operation_id = operation_id;
+    return fixture->eth_submit_status;
+}
+
+wlh_coproc_ethernet_rx_result_t ethernet_eth_rx(
+    void *context,
+    uint32_t session_id,
+    uint8_t channel,
+    const uint8_t *frame,
+    size_t size
+) {
+    (void)frame;
+    fixture_t *fixture = context;
+    fixture->eth_rx_size = size;
+    fixture->eth_rx_session_id = session_id;
+    fixture->eth_rx_channel = channel;
+    ++fixture->eth_rx_calls;
+    return fixture->eth_rx_result;
+}
+
+/* Ready core with a wired Ethernet backend (service ops + data channel) when
+   with_backend is true, or without any ETH capability otherwise. */
+void prepare_ready_eth_core(
+    fixture_t *f, wlh_coproc_t *core, bool with_backend
+) {
+    wlh_coproc_config_t config;
+    uint8_t incoming[4096];
+    size_t incoming_size;
+    wlh_protocol_v1_HelloRequest hello = wlh_protocol_v1_HelloRequest_init_zero;
+
+    f->core = core;
+    memset(&config, 0, sizeof(config));
+    config.port.context = f;
+    config.port.submit_tx = submit_frame;
+    config.buffers = (wlh_coproc_buffer_ops_t){f, buffer_alloc, buffer_free};
+    config.osal = wlh_posix_osal_ops(&f->posix);
+    if (with_backend) {
+        config.port.ethernet_eth_rx = ethernet_eth_rx;
+        config.eth.context = f;
+        config.eth.get_info = eth_get_info;
+    }
+    config.max_frame_size = 4096;
+    /* Long heartbeat so decode_last_sent never races a heartbeat frame. */
+    config.heartbeat_interval_ms = 60000;
+    config.initial_credit = 64;
+    config.initial_session_id = 42;
+    config.core_queue_depth = 8u;
+
+    CHECK(wlh_coproc_init(core, &config) == WLH_COPROC_OK);
+    CHECK(wlh_coproc_start(core) == WLH_COPROC_OK);
+    wait_for_state(core, WLH_COPROC_STATE_WAITING_FOR_HELLO);
+
+    hello.protocol_versions_count = 1;
+    hello.protocol_versions[0].major = 1;
+    hello.max_frame_size = 4096;
+    incoming_size = make_rpc_frame(
+        incoming,
+        0,
+        0,
+        WLH_SERVICE_LINK,
+        WLH_LINK_METHOD_HELLO,
+        7,
+        wlh_protocol_v1_HelloRequest_fields,
+        &hello
+    );
+    CHECK(wlh_coproc_on_frame(core, incoming, incoming_size) == WLH_COPROC_OK);
+    wait_for_state(core, WLH_COPROC_STATE_READY);
+    wait_for_sent(f, 1u);
+}
+
 void wait_milliseconds(uint32_t milliseconds) {
     struct timespec value = {
         (time_t)(milliseconds / 1000u), (long)(milliseconds % 1000u) * 1000000L
@@ -365,7 +438,7 @@ void prepare_ready_core(
     memset(&config, 0, sizeof(config));
     config.port.context = f;
     config.port.submit_tx = submit_frame;
-    config.port.ethernet_rx = ethernet_rx;
+    config.port.ethernet_sta_rx = ethernet_sta_rx;
     config.buffers = (wlh_coproc_buffer_ops_t){f, buffer_alloc, buffer_free};
     config.osal = wlh_posix_osal_ops(&f->posix);
     if (with_optional_services) {
@@ -454,7 +527,7 @@ void prepare_ready_bt_core(fixture_t *f, wlh_coproc_t *core, bool declare_adv) {
     memset(&config, 0, sizeof(config));
     config.port.context = f;
     config.port.submit_tx = submit_frame;
-    config.port.ethernet_rx = ethernet_rx;
+    config.port.ethernet_sta_rx = ethernet_sta_rx;
     config.buffers = (wlh_coproc_buffer_ops_t){f, buffer_alloc, buffer_free};
     config.osal = wlh_posix_osal_ops(&f->posix);
     config.bluetooth.context = f;
@@ -741,7 +814,7 @@ void prepare_ready_ota_core(fixture_t *f, wlh_coproc_t *core) {
     memset(&config, 0, sizeof(config));
     config.port.context = f;
     config.port.submit_tx = submit_frame;
-    config.port.ethernet_rx = ethernet_rx;
+    config.port.ethernet_sta_rx = ethernet_sta_rx;
     config.buffers = (wlh_coproc_buffer_ops_t){f, buffer_alloc, buffer_free};
     config.osal = wlh_posix_osal_ops(&f->posix);
     config.ota.context = f;

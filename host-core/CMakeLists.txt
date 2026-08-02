@@ -20,6 +20,7 @@ add_library(wlh_host_core STATIC
     src/host_adc.c
     src/host_bluetooth.c
     src/host_device_info.c
+    src/host_eth.c
     src/host_ethernet.c
     src/host_frame.c
     src/host_io.c
@@ -58,6 +59,7 @@ if(WLH_HOST_BUILD_TESTING)
         tests/test_host_allocation.c
         tests/test_host_bluetooth.c
         tests/test_host_device_user.c
+        tests/test_host_eth.c
         tests/test_host_ethernet.c
         tests/test_host_link.c
         tests/test_host_peripherals.c

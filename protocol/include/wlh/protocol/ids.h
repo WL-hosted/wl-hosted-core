@@ -22,7 +22,10 @@ enum {
      * ride a separate channel with a small credit window: reliable HCI on
      * WLH_CHANNEL_BLUETOOTH_HCI is never queued behind a report flood, and
      * a sender without credit sheds reports instead of backpressuring. */
-    WLH_CHANNEL_BLUETOOTH_HCI_ADV = 0x09
+    WLH_CHANNEL_BLUETOOTH_HCI_ADV = 0x09,
+    /* Wired Ethernet data channel, parallel to ETHERNET_STA/ETHERNET_AP.
+     * Carries the same Raw Record type 1 (complete L2 frame, no FCS). */
+    WLH_CHANNEL_ETHERNET_ETH = 0x0a
 };
 
 enum {
@@ -36,6 +39,7 @@ enum {
     WLH_SERVICE_ADC = 0x0007,
     WLH_SERVICE_KV = 0x0008,
     WLH_SERVICE_DEVICE_INFO = 0x0009,
+    WLH_SERVICE_ETH = 0x000a,
     WLH_SERVICE_USER_PASSTHROUGH = 0x000f
 };
 
@@ -153,6 +157,12 @@ enum {
 enum { WLH_DEVICE_INFO_METHOD_GET_INFO = 0x0001 };
 
 enum {
+    WLH_ETH_METHOD_GET_INFO = 0x0001,
+
+    WLH_ETH_EVENT_LINK_STATE_CHANGED = 0x8001
+};
+
+enum {
     WLH_USER_PASSTHROUGH_METHOD_SEND = 0x0001,
 
     WLH_USER_PASSTHROUGH_EVENT_RESULT = 0x8001
@@ -170,6 +180,7 @@ typedef enum wlh_status_domain {
     WLH_STATUS_DOMAIN_STORAGE = 8,
     WLH_STATUS_DOMAIN_DEVICE_INFO = 9,
     WLH_STATUS_DOMAIN_USER = 10,
+    WLH_STATUS_DOMAIN_ETH = 11,
     WLH_STATUS_DOMAIN_VENDOR_MIN = 0x8000
 } wlh_status_domain_t;
 

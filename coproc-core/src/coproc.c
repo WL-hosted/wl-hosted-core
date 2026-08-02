@@ -360,6 +360,12 @@ static void coproc_worker(void *argument) {
                 coproc->config.buffers.free(
                     coproc->config.buffers.context, (uint8_t *)completed
                 );
+            } else if (job.kind == COPROC_JOB_ETH_INFO) {
+                coproc_eth_info_job_t *completed = job.payload;
+                eth_info_completed(coproc, completed);
+                coproc->config.buffers.free(
+                    coproc->config.buffers.context, (uint8_t *)completed
+                );
             } else if (job.kind == COPROC_JOB_TRANSPORT_FAILED) {
                 WLH_LOGW("wlh_coproc", "transport failed");
                 set_state(coproc, WLH_COPROC_STATE_FAILED);
@@ -643,6 +649,7 @@ void wlh_coproc_test_reset_session(wlh_coproc_t *coproc, uint32_t reason) {
         memset(
             &coproc->bluetooth_pending, 0, sizeof(coproc->bluetooth_pending)
         );
+        memset(&coproc->eth_pending, 0, sizeof(coproc->eth_pending));
         coproc->bluetooth_state = BT_STATE_UNSPECIFIED;
         coproc->bluetooth_tx_inflight = 0u;
         coproc->bluetooth_hci_stopped = false;

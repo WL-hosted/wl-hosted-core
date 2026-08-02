@@ -62,7 +62,9 @@ typedef enum wlh_host_event_kind {
     WLH_HOST_EVENT_WIFI_AP_CLIENT_LEFT,
     WLH_HOST_EVENT_ETHERNET_AP_RX,
     WLH_HOST_EVENT_BLUETOOTH_STATE_CHANGED,
-    WLH_HOST_EVENT_OTA_PROGRESS
+    WLH_HOST_EVENT_OTA_PROGRESS,
+    WLH_HOST_EVENT_ETHERNET_ETH_RX,
+    WLH_HOST_EVENT_ETH_LINK_STATE_CHANGED
 } wlh_host_event_kind_t;
 
 typedef struct wlh_host_event {
@@ -102,6 +104,39 @@ typedef struct wlh_host_bluetooth_state_event {
 
 /* Locally detected malformed HCI traffic. */
 #define WLH_HOST_BLUETOOTH_REASON_MALFORMED_HCI 1u
+
+/* Wired Ethernet service client. Values match the EthLinkState/EthSpeed/
+ * EthDuplex wire enums. */
+typedef enum wlh_host_eth_link_state {
+    WLH_HOST_ETH_LINK_STATE_DOWN = 1,
+    WLH_HOST_ETH_LINK_STATE_UP = 2
+} wlh_host_eth_link_state_t;
+typedef enum wlh_host_eth_speed {
+    WLH_HOST_ETH_SPEED_UNSPECIFIED = 0,
+    WLH_HOST_ETH_SPEED_10M = 1,
+    WLH_HOST_ETH_SPEED_100M = 2,
+    WLH_HOST_ETH_SPEED_1000M = 3
+} wlh_host_eth_speed_t;
+typedef enum wlh_host_eth_duplex {
+    WLH_HOST_ETH_DUPLEX_UNSPECIFIED = 0,
+    WLH_HOST_ETH_DUPLEX_HALF = 1,
+    WLH_HOST_ETH_DUPLEX_FULL = 2
+} wlh_host_eth_duplex_t;
+
+typedef struct wlh_host_eth_info {
+    wlh_host_eth_link_state_t link_state;
+    uint8_t mac_address[6];
+    wlh_host_eth_speed_t speed;
+    wlh_host_eth_duplex_t duplex;
+} wlh_host_eth_info_t;
+
+/* WLH_HOST_EVENT_ETH_LINK_STATE_CHANGED payload; copy with memcpy because the
+ * event payload buffer carries no alignment guarantee. */
+typedef struct wlh_host_eth_link_state_event {
+    wlh_host_eth_link_state_t link_state;
+    wlh_host_eth_speed_t speed;
+    wlh_host_eth_duplex_t duplex;
+} wlh_host_eth_link_state_event_t;
 
 typedef void (*wlh_transport_lifecycle_complete_fn)(
     void *completion_context, int status
@@ -271,12 +306,13 @@ typedef struct wlh_host {
     uint32_t expected_rx_sequence[WLH_HOST_CHANNEL_COUNT];
     uint32_t tx_credit[WLH_HOST_CHANNEL_COUNT];
     /* Ethernet linkoutput must only report success when there is credit for
-     * the queued frame. Protected by state_mutex. */
-    uint32_t ethernet_tx_queued[2];
+     * the queued frame. Protected by state_mutex.
+     * Interface index: 0=STA, 1=AP, 2=ETH. */
+    uint32_t ethernet_tx_queued[3];
     /* Ethernet RX credits are coalesced by the Core worker. This prevents a
      * control-frame transaction per received packet while bounding credit
      * latency and retaining units across synchronous transport rejection. */
-    uint32_t ethernet_rx_pending_credit[2];
+    uint32_t ethernet_rx_pending_credit[3];
     uint64_t ethernet_rx_credit_due_ms;
     bool rx_sequence_valid[WLH_HOST_CHANNEL_COUNT];
 
@@ -658,6 +694,25 @@ wlh_host_result_t wlh_host_ethernet_sta_send(
 );
 wlh_host_result_t wlh_host_ethernet_ap_send(
     wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+);
+wlh_host_result_t wlh_host_ethernet_eth_send(
+    wlh_host_t *host, const uint8_t *ethernet_frame, size_t size
+);
+
+/* Wired Ethernet service client. info is NULL unless result == WLH_HOST_OK,
+ * and is valid only for the duration of the call. When the peer does not
+ * provide the service the completion reports WLH_HOST_PROTOCOL_ERROR with
+ * status_code WLH_STATUS_NOT_SUPPORTED. */
+typedef void (*wlh_host_eth_info_fn)(
+    void *context,
+    wlh_host_result_t result,
+    uint16_t status_domain,
+    int16_t status_code,
+    const wlh_host_eth_info_t *info
+);
+
+wlh_host_result_t wlh_host_eth_get_info(
+    wlh_host_t *host, wlh_host_eth_info_fn completion, void *context
 );
 
 void wlh_host_get_diagnostics(

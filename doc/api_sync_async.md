@@ -113,7 +113,7 @@ completion 报告。
 | 回调组 | 语义 |
 |---|---|
 | `port.submit_tx` | 异步请求。成功后 Adapter 拥有 frame，必须以 `wlh_coproc_tx_complete_fn` 异步归还。 |
-| `port.ethernet_rx`、`port.ethernet_ap_rx` | 同步、必须快速返回。Adapter 必须复制/入队，不能在 Core task 中运行网络栈。 |
+| `port.ethernet_sta_rx`、`port.ethernet_ap_rx` | 同步、必须快速返回。Adapter 必须复制/入队，不能在 Core task 中运行网络栈。 |
 | Wi-Fi ops（`initialize`、`scan`、`connect`、`disconnect`、`start_ap`、`stop_ap`） | 异步请求。返回 0 仅表示接受；结果以相应 `wlh_coproc_wifi_*` ingress 上报。 |
 | Bluetooth lifecycle / GET_INFO ops | 异步请求。以相同 `operation_id` 调用 `wlh_coproc_bluetooth_operation_complete` 或 `wlh_coproc_bluetooth_info_result`。`hci_send` 则是同步、快速的 packet 交付回调。 |
 | OTA `begin`、`finalize`、`abort`、`activate` | 异步请求。以相同 `operation_id` 调用相应 `wlh_coproc_ota_*_complete`。 |

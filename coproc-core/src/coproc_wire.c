@@ -22,7 +22,8 @@ static void tx_complete(
     wlh_coproc_t *coproc = completion_context;
     bool ethernet_frame = size >= WLH_FRAME_HEADER_SIZE &&
                           (frame[4] == WLH_CHANNEL_ETHERNET_STA ||
-                           frame[4] == WLH_CHANNEL_ETHERNET_AP);
+                           frame[4] == WLH_CHANNEL_ETHERNET_AP ||
+                           frame[4] == WLH_CHANNEL_ETHERNET_ETH);
     coproc->config.buffers.free(coproc->config.buffers.context, frame);
     if (ethernet_frame) {
         (void)coproc->config.osal.semaphore_give(

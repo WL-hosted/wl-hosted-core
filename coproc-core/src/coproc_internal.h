@@ -51,7 +51,8 @@ typedef enum coproc_job_kind {
     COPROC_JOB_BLUETOOTH_FATAL,
     COPROC_JOB_OTA_COMPLETE,
     COPROC_JOB_OTA_WRITE_COMPLETE,
-    COPROC_JOB_ETHERNET_RX_COMPLETE
+    COPROC_JOB_ETHERNET_RX_COMPLETE,
+    COPROC_JOB_ETH_INFO
 } coproc_job_kind_t;
 
 typedef struct coproc_job {
@@ -100,6 +101,12 @@ typedef struct coproc_ota_write_job {
     uint64_t bytes_received;
     int backend_status;
 } coproc_ota_write_job_t;
+
+typedef struct coproc_eth_info_job {
+    uint32_t operation_id;
+    int backend_status;
+    wlh_coproc_eth_info_t info;
+} coproc_eth_info_job_t;
 
 uint64_t wlh_coproc_internal_now_ms(const wlh_coproc_t *coproc);
 void wlh_coproc_internal_set_state(
@@ -203,6 +210,16 @@ wlh_coproc_result_t wlh_coproc_internal_handle_bluetooth(
     const uint8_t *message,
     size_t message_size
 );
+bool wlh_coproc_internal_eth_backend_present(const wlh_coproc_t *coproc);
+wlh_coproc_result_t wlh_coproc_internal_handle_eth(
+    wlh_coproc_t *coproc,
+    const wlh_rpc_envelope_t *request,
+    const uint8_t *message,
+    size_t message_size
+);
+void wlh_coproc_internal_eth_info_completed(
+    wlh_coproc_t *coproc, const coproc_eth_info_job_t *completed
+);
 wlh_coproc_result_t wlh_coproc_internal_handle_device_info_request(
     wlh_coproc_t *coproc, const wlh_rpc_envelope_t *request
 );
@@ -296,6 +313,9 @@ void wlh_coproc_internal_ota_write_completed(
 #define handle_hello_request wlh_coproc_internal_handle_hello_request
 #define handle_wifi wlh_coproc_internal_handle_wifi
 #define handle_bluetooth wlh_coproc_internal_handle_bluetooth
+#define eth_backend_present wlh_coproc_internal_eth_backend_present
+#define handle_eth wlh_coproc_internal_handle_eth
+#define eth_info_completed wlh_coproc_internal_eth_info_completed
 #define handle_device_info_request                                             \
     wlh_coproc_internal_handle_device_info_request
 #define handle_diagnostics_request                                             \
