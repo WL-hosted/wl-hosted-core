@@ -94,8 +94,6 @@ typedef struct task_state {
 
 typedef struct mutex_state {
     pthread_mutex_t mutex;
-    pthread_cond_t condition;
-    bool locked;
 } mutex_state_t;
 
 typedef struct semaphore_state {
@@ -140,7 +138,7 @@ _Static_assert(
     sizeof(uintptr_t) <= sizeof(wlh_osal_task_t), "task pointer storage"
 );
 _Static_assert(
-    sizeof(uintptr_t) <= sizeof(wlh_osal_mutex_t), "mutex pointer storage"
+    sizeof(mutex_state_t) <= sizeof(wlh_osal_mutex_t), "mutex opaque storage"
 );
 _Static_assert(
     sizeof(semaphore_state_t) <= sizeof(wlh_osal_semaphore_t),
@@ -170,14 +168,44 @@ static void sleep_duration(uint32_t duration_ms) {
     }
 }
 
-static int wait_condition(
-    pthread_cond_t *condition, pthread_mutex_t *mutex, uint32_t timeout_ms
+static uint64_t deadline_for_timeout(uint32_t timeout_ms) {
+    if (timeout_ms == WLH_OSAL_WAIT_FOREVER || timeout_ms == WLH_OSAL_NO_WAIT)
+        return 0u;
+    return clock_ms() + timeout_ms;
+}
+
+static int lock_with_timeout(
+    pthread_mutex_t *mutex, uint32_t timeout_ms, uint64_t deadline_ms
 ) {
+    int result;
+    if (timeout_ms == WLH_OSAL_WAIT_FOREVER)
+        return pthread_mutex_lock(mutex) == 0 ? 0 : -1;
+    do {
+        result = pthread_mutex_trylock(mutex);
+        if (result == 0)
+            return 0;
+        if (result != EBUSY || timeout_ms == WLH_OSAL_NO_WAIT ||
+            clock_ms() >= deadline_ms)
+            return -1;
+        sleep_duration(1u);
+    } while (true);
+}
+
+static int wait_condition(
+    pthread_cond_t *condition,
+    pthread_mutex_t *mutex,
+    uint32_t timeout_ms,
+    uint64_t deadline_ms
+) {
+    uint64_t now;
     if (timeout_ms == WLH_OSAL_WAIT_FOREVER)
         return pthread_cond_wait(condition, mutex) == 0 ? 0 : -1;
     if (timeout_ms == WLH_OSAL_NO_WAIT)
         return -1;
-    return cond_timedwait_ms(condition, mutex, timeout_ms);
+    now = clock_ms();
+    if (now >= deadline_ms)
+        return -1;
+    return cond_timedwait_ms(condition, mutex, (uint32_t)(deadline_ms - now));
 }
 
 static void *task_trampoline(void *argument) {
@@ -288,79 +316,41 @@ static int os_task_join(
 }
 
 static int os_mutex_create(void *context, wlh_osal_mutex_t *mutex) {
-    mutex_state_t *state;
+    mutex_state_t *state = (mutex_state_t *)mutex;
     (void)context;
-    if (mutex == NULL)
-        return -1;
-    memset(mutex, 0, sizeof(*mutex));
-    state = calloc(1u, sizeof(*state));
     if (state == NULL)
         return -1;
-    if (pthread_mutex_init(&state->mutex, NULL) != 0) {
-        free(state);
+    memset(mutex, 0, sizeof(*mutex));
+    if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
-    }
-    if (cond_init_monotonic(&state->condition) != 0) {
-        pthread_mutex_destroy(&state->mutex);
-        free(state);
-        return -1;
-    }
-    mutex->opaque[0] = (uintptr_t)state;
     return 0;
 }
 static void os_mutex_destroy(void *context, wlh_osal_mutex_t *mutex) {
-    mutex_state_t *state =
-        mutex == NULL ? NULL : (mutex_state_t *)mutex->opaque[0];
+    mutex_state_t *state = (mutex_state_t *)mutex;
     (void)context;
     if (state == NULL)
         return;
-    (void)pthread_cond_destroy(&state->condition);
     (void)pthread_mutex_destroy(&state->mutex);
-    free(state);
-    mutex->opaque[0] = 0u;
+    memset(mutex, 0, sizeof(*mutex));
 }
 static int os_mutex_lock(
     void *context, wlh_osal_mutex_t *mutex, uint32_t timeout_ms
 ) {
-    mutex_state_t *state =
-        mutex == NULL ? NULL : (mutex_state_t *)mutex->opaque[0];
-    int result = 0;
+    mutex_state_t *state = (mutex_state_t *)mutex;
+    uint64_t deadline;
+    int result;
     (void)context;
-    if (state == NULL || pthread_mutex_lock(&state->mutex) != 0)
+    if (state == NULL)
         return -1;
-    if (timeout_ms == WLH_OSAL_WAIT_FOREVER) {
-        while (state->locked && result == 0)
-            result = pthread_cond_wait(&state->condition, &state->mutex);
-    } else if (timeout_ms == WLH_OSAL_NO_WAIT) {
-        if (state->locked)
-            result = ETIMEDOUT;
-    } else {
-        uint64_t deadline = clock_ms() + timeout_ms;
-        while (state->locked && result == 0) {
-            uint64_t now = clock_ms();
-            if (now >= deadline) {
-                result = ETIMEDOUT;
-                break;
-            }
-            result = cond_timedwait_ms(
-                &state->condition, &state->mutex, (uint32_t)(deadline - now)
-            );
-        }
-    }
-    if (result == 0)
-        state->locked = true;
-    pthread_mutex_unlock(&state->mutex);
-    return result == 0 ? 0 : -1;
+    deadline = deadline_for_timeout(timeout_ms);
+    result = lock_with_timeout(&state->mutex, timeout_ms, deadline);
+    return result;
 }
 static void os_mutex_unlock(void *context, wlh_osal_mutex_t *mutex) {
-    mutex_state_t *state =
-        mutex == NULL ? NULL : (mutex_state_t *)mutex->opaque[0];
+    mutex_state_t *state = (mutex_state_t *)mutex;
     (void)context;
-    if (state == NULL || pthread_mutex_lock(&state->mutex) != 0)
-        return;
-    state->locked = false;
-    pthread_cond_signal(&state->condition);
-    pthread_mutex_unlock(&state->mutex);
+    if (state != NULL)
+        (void)pthread_mutex_unlock(&state->mutex);
 }
 
 static int os_semaphore_create(
@@ -398,12 +388,16 @@ static int os_semaphore_take(
     void *context, wlh_osal_semaphore_t *semaphore, uint32_t timeout_ms
 ) {
     semaphore_state_t *state = (semaphore_state_t *)semaphore;
+    uint64_t deadline = deadline_for_timeout(timeout_ms);
     int result = 0;
     (void)context;
-    if (state == NULL || pthread_mutex_lock(&state->mutex) != 0)
+    if (state == NULL ||
+        lock_with_timeout(&state->mutex, timeout_ms, deadline) != 0)
         return -1;
     while (state->count == 0u) {
-        if (wait_condition(&state->condition, &state->mutex, timeout_ms) != 0) {
+        if (wait_condition(
+                &state->condition, &state->mutex, timeout_ms, deadline
+            ) != 0) {
             result = -1;
             break;
         }
@@ -436,7 +430,7 @@ static int os_semaphore_give_from_isr(
     bool *higher_priority_task_woken
 ) {
     if (higher_priority_task_woken != NULL)
-        *higher_priority_task_woken = true;
+        *higher_priority_task_woken = false;
     return os_semaphore_give(context, semaphore);
 }
 
@@ -475,19 +469,24 @@ static int os_event_wait(
     uint32_t *observed_bits
 ) {
     event_state_t *state = (event_state_t *)event;
+    uint64_t deadline = deadline_for_timeout(timeout_ms);
     int result = 0;
     (void)context;
-    if (state == NULL || bits == 0u || observed_bits == NULL ||
-        pthread_mutex_lock(&state->mutex) != 0)
+    if (state == NULL || bits == 0u ||
+        (bits & ~WLH_OSAL_EVENT_BITS_MASK) != 0u ||
+        lock_with_timeout(&state->mutex, timeout_ms, deadline) != 0)
         return -1;
     while (!event_matches(state->bits, bits, wait_all)) {
-        if (wait_condition(&state->condition, &state->mutex, timeout_ms) != 0) {
+        if (wait_condition(
+                &state->condition, &state->mutex, timeout_ms, deadline
+            ) != 0) {
             result = -1;
             break;
         }
     }
     if (result == 0) {
-        *observed_bits = state->bits & bits;
+        if (observed_bits != NULL)
+            *observed_bits = state->bits & bits;
         if (clear_on_exit)
             state->bits &= ~bits;
     }
@@ -497,7 +496,9 @@ static int os_event_wait(
 static int os_event_set(void *context, wlh_osal_event_t *event, uint32_t bits) {
     event_state_t *state = (event_state_t *)event;
     (void)context;
-    if (state == NULL || pthread_mutex_lock(&state->mutex) != 0)
+    if (state == NULL || bits == 0u ||
+        (bits & ~WLH_OSAL_EVENT_BITS_MASK) != 0u ||
+        pthread_mutex_lock(&state->mutex) != 0)
         return -1;
     state->bits |= bits;
     pthread_cond_broadcast(&state->condition);
@@ -511,7 +512,7 @@ static int os_event_set_from_isr(
     bool *higher_priority_task_woken
 ) {
     if (higher_priority_task_woken != NULL)
-        *higher_priority_task_woken = true;
+        *higher_priority_task_woken = false;
     return os_event_set(context, event, bits);
 }
 
@@ -559,12 +560,16 @@ static int os_queue_send(
     uint32_t timeout_ms
 ) {
     queue_state_t *state = (queue_state_t *)queue;
+    uint64_t deadline = deadline_for_timeout(timeout_ms);
     size_t tail;
     (void)context;
-    if (state == NULL || item == NULL || pthread_mutex_lock(&state->mutex) != 0)
+    if (state == NULL || item == NULL ||
+        lock_with_timeout(&state->mutex, timeout_ms, deadline) != 0)
         return -1;
     while (state->count == state->capacity) {
-        if (wait_condition(&state->not_full, &state->mutex, timeout_ms) != 0) {
+        if (wait_condition(
+                &state->not_full, &state->mutex, timeout_ms, deadline
+            ) != 0) {
             pthread_mutex_unlock(&state->mutex);
             return -1;
         }
@@ -583,18 +588,22 @@ static int os_queue_send_from_isr(
     bool *higher_priority_task_woken
 ) {
     if (higher_priority_task_woken != NULL)
-        *higher_priority_task_woken = true;
+        *higher_priority_task_woken = false;
     return os_queue_send(context, queue, item, WLH_OSAL_NO_WAIT);
 }
 static int os_queue_receive(
     void *context, wlh_osal_queue_t *queue, void *item, uint32_t timeout_ms
 ) {
     queue_state_t *state = (queue_state_t *)queue;
+    uint64_t deadline = deadline_for_timeout(timeout_ms);
     (void)context;
-    if (state == NULL || item == NULL || pthread_mutex_lock(&state->mutex) != 0)
+    if (state == NULL || item == NULL ||
+        lock_with_timeout(&state->mutex, timeout_ms, deadline) != 0)
         return -1;
     while (state->count == 0u) {
-        if (wait_condition(&state->not_empty, &state->mutex, timeout_ms) != 0) {
+        if (wait_condition(
+                &state->not_empty, &state->mutex, timeout_ms, deadline
+            ) != 0) {
             pthread_mutex_unlock(&state->mutex);
             return -1;
         }

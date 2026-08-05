@@ -10,7 +10,8 @@ extern "C" {
 /*
  * FreeRTOS OSAL adapter for the WL-hosted portable OSAL contract. Objects keep
  * native handles behind the opaque OSAL storage; all waits are bounded except
- * the explicit WLH_OSAL_WAIT_FOREVER.
+ * the explicit WLH_OSAL_WAIT_FOREVER. The port must use 32-bit ticks, enable
+ * software timers, and set INCLUDE_xTimerPendFunctionCall to 1.
  */
 
 typedef struct wlh_freertos_osal {

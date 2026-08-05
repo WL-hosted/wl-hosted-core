@@ -10,6 +10,15 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 
+#if !defined(INCLUDE_xTimerPendFunctionCall) ||                                \
+    INCLUDE_xTimerPendFunctionCall != 1
+#error "FreeRTOS OSAL requires INCLUDE_xTimerPendFunctionCall=1"
+#endif
+
+#if defined(configUSE_16_BIT_TICKS) && configUSE_16_BIT_TICKS != 0
+#error "FreeRTOS OSAL requires 32-bit ticks for 24-bit portable event groups"
+#endif
+
 #define FREERTOS_OSAL_DEFAULT_STACK_SIZE 4096u
 #define FREERTOS_OSAL_DEFAULT_PRIORITY 5u
 
@@ -26,16 +35,24 @@ typedef struct freertos_osal_queue_state {
 
 typedef struct freertos_osal_timer_state {
     TimerHandle_t handle;
+    SemaphoreHandle_t daemon_barrier;
     wlh_osal_timer_fn callback;
     void *argument;
 } freertos_osal_timer_state_t;
 
 static TickType_t timeout_ticks(uint32_t timeout_ms) {
+    uint64_t ticks;
     if (timeout_ms == WLH_OSAL_WAIT_FOREVER)
         return portMAX_DELAY;
     if (timeout_ms == WLH_OSAL_NO_WAIT)
         return 0u;
-    return pdMS_TO_TICKS(timeout_ms);
+    ticks =
+        ((uint64_t)timeout_ms * (uint64_t)configTICK_RATE_HZ + 999u) / 1000u;
+    if (ticks == 0u)
+        ticks = 1u;
+    if (ticks >= (uint64_t)portMAX_DELAY)
+        ticks = (uint64_t)portMAX_DELAY - 1u;
+    return (TickType_t)ticks;
 }
 
 static void task_trampoline(void *parameter) {
@@ -55,6 +72,10 @@ static int freertos_task_create(
 ) {
     freertos_osal_task_state_t *state;
     BaseType_t created;
+    configSTACK_DEPTH_TYPE stack_depth;
+    uint64_t requested_depth;
+    uint64_t maximum_depth;
+    size_t stack_size;
     (void)context;
 
     if (task == NULL || entry == NULL)
@@ -70,13 +91,33 @@ static int freertos_task_create(
     state->entry = entry;
     state->argument = argument;
 
+    stack_size = attributes != NULL && attributes->stack_size != 0u
+                     ? attributes->stack_size
+                     : FREERTOS_OSAL_DEFAULT_STACK_SIZE;
+#if defined(ESP_PLATFORM)
+    /* ESP-IDF deliberately defines xTaskCreate() stack depth in bytes. */
+    requested_depth = stack_size;
+#else
+    requested_depth =
+        ((uint64_t)stack_size + sizeof(StackType_t) - 1u) / sizeof(StackType_t);
+#endif
+    maximum_depth =
+        (uint64_t)((configSTACK_DEPTH_TYPE) ~(configSTACK_DEPTH_TYPE)0);
+    if (requested_depth == 0u || requested_depth > maximum_depth ||
+        (attributes != NULL &&
+         (attributes->priority < 0 ||
+          attributes->priority >= (int32_t)configMAX_PRIORITIES))) {
+        vSemaphoreDelete(state->done);
+        free(state);
+        return -1;
+    }
+    stack_depth = (configSTACK_DEPTH_TYPE)requested_depth;
+
     created = xTaskCreate(
         task_trampoline,
         attributes != NULL && attributes->name != NULL ? attributes->name
                                                        : "wlh",
-        attributes != NULL && attributes->stack_size != 0u
-            ? (uint32_t)attributes->stack_size
-            : FREERTOS_OSAL_DEFAULT_STACK_SIZE,
+        stack_depth,
         state,
         attributes != NULL ? (UBaseType_t)attributes->priority
                            : FREERTOS_OSAL_DEFAULT_PRIORITY,
@@ -255,7 +296,8 @@ static int freertos_event_wait(
     EventBits_t observed;
     bool satisfied;
     (void)context;
-    if (event == NULL || event->opaque[0] == 0u || bits == 0u)
+    if (event == NULL || event->opaque[0] == 0u || bits == 0u ||
+        (bits & ~WLH_OSAL_EVENT_BITS_MASK) != 0u)
         return -1;
     observed = xEventGroupWaitBits(
         (EventGroupHandle_t)event->opaque[0],
@@ -268,7 +310,7 @@ static int freertos_event_wait(
     if (!satisfied)
         return -1;
     if (observed_bits != NULL)
-        *observed_bits = observed;
+        *observed_bits = observed & bits;
     return 0;
 }
 
@@ -276,7 +318,8 @@ static int freertos_event_set(
     void *context, wlh_osal_event_t *event, uint32_t bits
 ) {
     (void)context;
-    if (event == NULL || event->opaque[0] == 0u)
+    if (event == NULL || event->opaque[0] == 0u || bits == 0u ||
+        (bits & ~WLH_OSAL_EVENT_BITS_MASK) != 0u)
         return -1;
     (void)xEventGroupSetBits((EventGroupHandle_t)event->opaque[0], bits);
     return 0;
@@ -291,7 +334,8 @@ static int freertos_event_set_from_isr(
     BaseType_t woken = pdFALSE;
     BaseType_t result;
     (void)context;
-    if (event == NULL || event->opaque[0] == 0u)
+    if (event == NULL || event->opaque[0] == 0u || bits == 0u ||
+        (bits & ~WLH_OSAL_EVENT_BITS_MASK) != 0u)
         return -1;
     result = xEventGroupSetBitsFromISR(
         (EventGroupHandle_t)event->opaque[0], bits, &woken
@@ -393,6 +437,21 @@ static void timer_trampoline(TimerHandle_t handle) {
     state->callback(state->argument);
 }
 
+static void timer_barrier_trampoline(void *argument, uint32_t value) {
+    freertos_osal_timer_state_t *state = argument;
+    (void)value;
+    (void)xSemaphoreGive(state->daemon_barrier);
+}
+
+static void wait_for_timer_daemon(freertos_osal_timer_state_t *state) {
+    while (xTimerPendFunctionCall(
+               timer_barrier_trampoline, state, 0u, portMAX_DELAY
+           ) != pdPASS) {
+        taskYIELD();
+    }
+    (void)xSemaphoreTake(state->daemon_barrier, portMAX_DELAY);
+}
+
 static int freertos_timer_create(
     void *context,
     wlh_osal_timer_t *timer,
@@ -408,6 +467,17 @@ static int freertos_timer_create(
         return -1;
     state->callback = callback;
     state->argument = argument;
+    state->daemon_barrier = xSemaphoreCreateBinary();
+    if (state->daemon_barrier == NULL) {
+        free(state);
+        return -1;
+    }
+    state->handle = xTimerCreate("wlh", 1u, pdFALSE, state, timer_trampoline);
+    if (state->handle == NULL) {
+        vSemaphoreDelete(state->daemon_barrier);
+        free(state);
+        return -1;
+    }
     memset(timer, 0, sizeof(*timer));
     timer->opaque[0] = (uintptr_t)state;
     return 0;
@@ -419,8 +489,11 @@ static void freertos_timer_destroy(void *context, wlh_osal_timer_t *timer) {
     if (timer == NULL || timer->opaque[0] == 0u)
         return;
     state = (freertos_osal_timer_state_t *)timer->opaque[0];
-    if (state->handle != NULL)
-        (void)xTimerDelete(state->handle, pdMS_TO_TICKS(100u));
+    (void)xTimerStop(state->handle, portMAX_DELAY);
+    wait_for_timer_daemon(state);
+    (void)xTimerDelete(state->handle, portMAX_DELAY);
+    wait_for_timer_daemon(state);
+    vSemaphoreDelete(state->daemon_barrier);
     free(state);
     timer->opaque[0] = 0u;
 }
@@ -433,22 +506,12 @@ static int freertos_timer_start(
     if (timer == NULL || timer->opaque[0] == 0u || period_ms == 0u)
         return -1;
     state = (freertos_osal_timer_state_t *)timer->opaque[0];
-    /* FreeRTOS cannot switch a timer between one-shot and periodic; recreate
-     * the timer so start() fully describes the new schedule. */
-    if (state->handle != NULL) {
-        (void)xTimerDelete(state->handle, pdMS_TO_TICKS(100u));
-        state->handle = NULL;
-    }
-    state->handle = xTimerCreate(
-        "wlh",
-        pdMS_TO_TICKS(period_ms),
-        periodic ? pdTRUE : pdFALSE,
-        state,
-        timer_trampoline
-    );
-    if (state->handle == NULL)
-        return -1;
-    return xTimerStart(state->handle, pdMS_TO_TICKS(100u)) == pdTRUE ? 0 : -1;
+    vTimerSetReloadMode(state->handle, periodic ? pdTRUE : pdFALSE);
+    return xTimerChangePeriod(
+               state->handle, timeout_ticks(period_ms), timeout_ticks(100u)
+           ) == pdTRUE
+               ? 0
+               : -1;
 }
 
 static int freertos_timer_stop(void *context, wlh_osal_timer_t *timer) {
@@ -457,9 +520,7 @@ static int freertos_timer_stop(void *context, wlh_osal_timer_t *timer) {
     if (timer == NULL || timer->opaque[0] == 0u)
         return -1;
     state = (freertos_osal_timer_state_t *)timer->opaque[0];
-    if (state->handle == NULL)
-        return -1;
-    return xTimerStop(state->handle, pdMS_TO_TICKS(100u)) == pdTRUE ? 0 : -1;
+    return xTimerStop(state->handle, timeout_ticks(100u)) == pdTRUE ? 0 : -1;
 }
 
 static uint64_t freertos_monotonic_time_ms(void *context) {
@@ -469,7 +530,7 @@ static uint64_t freertos_monotonic_time_ms(void *context) {
 
 static void freertos_sleep_ms(void *context, uint32_t duration_ms) {
     (void)context;
-    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    vTaskDelay(timeout_ticks(duration_ms));
 }
 
 static void freertos_yield(void *context) {

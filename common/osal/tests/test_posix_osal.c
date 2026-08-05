@@ -74,20 +74,30 @@ int main(void) {
     );
     assert(
         ops.queue_send_from_isr(ops.context, &queue, &value, &woken) == 0 &&
-        woken
+        !woken
     );
     assert(ops.queue_receive(ops.context, &queue, &received, 100u) == 0);
     ops.queue_destroy(ops.context, &queue);
 
     assert(ops.semaphore_create(ops.context, &semaphore, 0u, 2u) == 0);
     assert(ops.event_create(ops.context, &event) == 0);
-    assert(ops.event_set_from_isr(ops.context, &event, 0x2u, &woken) == 0);
+    woken = true;
+    assert(
+        ops.event_set_from_isr(ops.context, &event, 0x2u, &woken) == 0 && !woken
+    );
     assert(
         ops.event_wait(
             ops.context, &event, 0x2u, true, true, 100u, &observed
         ) == 0
     );
     assert(observed == 0x2u);
+    assert(ops.event_set(ops.context, &event, 0x4u) == 0);
+    assert(
+        ops.event_wait(ops.context, &event, 0x4u, true, true, 100u, NULL) == 0
+    );
+    assert(
+        ops.event_set(ops.context, &event, WLH_OSAL_EVENT_BITS_MASK + 1u) != 0
+    );
 
     callback.ops = &ops;
     callback.semaphore = &semaphore;
@@ -113,6 +123,13 @@ int main(void) {
     assert(ops.semaphore_take(ops.context, &semaphore, 500u) == 0);
     assert(atomic_load(&callback.calls) == 2u);
     assert(ops.timer_stop(ops.context, &timer) == 0);
+    assert(ops.timer_start(ops.context, &timer, 10u, false) == 0);
+    assert(ops.semaphore_take(ops.context, &semaphore, 500u) == 0);
+    assert(atomic_load(&callback.calls) == 3u);
+    assert(ops.timer_start(ops.context, &timer, 20u, true) == 0);
+    assert(ops.semaphore_take(ops.context, &semaphore, 500u) == 0);
+    assert(ops.timer_stop(ops.context, &timer) == 0);
+    assert(atomic_load(&callback.calls) == 4u);
     ops.timer_destroy(ops.context, &timer);
 
     ops.event_destroy(ops.context, &event);

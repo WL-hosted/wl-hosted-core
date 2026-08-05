@@ -33,6 +33,11 @@ function(wlh_common_enable_log)
             "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/log_backend_esp.c"
         )
         set(WLH_LOG_BACKEND_MACRO "WLH_LOG_BACKEND_ESP")
+    elseif(WLH_LOG_BACKEND STREQUAL "RTT_ULOG")
+        add_library(wlh_log_backend STATIC
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/log_backend_rtt_ulog.c"
+        )
+        set(WLH_LOG_BACKEND_MACRO "WLH_LOG_BACKEND_RTT_ULOG")
     else()
         message(FATAL_ERROR "Unknown WLH_LOG_BACKEND: ${WLH_LOG_BACKEND}")
     endif()

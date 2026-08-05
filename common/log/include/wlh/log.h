@@ -47,6 +47,20 @@ typedef enum wlh_log_level {
 #define WLH_LOGD(tag, ...) ESP_LOGD(tag, __VA_ARGS__)
 #define WLH_LOGV(tag, ...) ESP_LOGV(tag, __VA_ARGS__)
 
+#elif defined(WLH_LOG_BACKEND_RTT_ULOG)
+
+#include "ulog.h"
+
+/* This RT-Thread ulog version exposes no assert/verbose tag macros, so assert
+ * goes through ulog_output() directly and verbose reuses the debug level. */
+#define WLH_LOGA(tag, ...)                                                     \
+    ulog_output(LOG_LVL_ASSERT, tag, RT_TRUE, __VA_ARGS__)
+#define WLH_LOGE(tag, ...) ulog_e(tag, __VA_ARGS__)
+#define WLH_LOGW(tag, ...) ulog_w(tag, __VA_ARGS__)
+#define WLH_LOGI(tag, ...) ulog_i(tag, __VA_ARGS__)
+#define WLH_LOGD(tag, ...) ulog_d(tag, __VA_ARGS__)
+#define WLH_LOGV(tag, ...) ulog_d(tag, __VA_ARGS__)
+
 #elif defined(WLH_LOG_BACKEND_PRINTF)
 
 void wlh_log_printf(
@@ -100,7 +114,7 @@ void wlh_log_printf(
 /* Optional runtime initialization. Expands to nothing when no backend is
  * selected; otherwise it is provided by the active backend source. */
 #if defined(WLH_LOG_BACKEND_EASYLOGGER) || defined(WLH_LOG_BACKEND_ESP) ||     \
-    defined(WLH_LOG_BACKEND_PRINTF)
+    defined(WLH_LOG_BACKEND_PRINTF) || defined(WLH_LOG_BACKEND_RTT_ULOG)
 void wlh_log_init(void);
 #define WLH_LOG_INIT() wlh_log_init()
 #else

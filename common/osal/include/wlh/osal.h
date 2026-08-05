@@ -11,6 +11,10 @@ extern "C" {
 
 #define WLH_OSAL_NO_WAIT 0u
 #define WLH_OSAL_WAIT_FOREVER UINT32_MAX
+/* FreeRTOS reserves the high byte of a 32-bit event group for control bits.
+ * Keeping the portable contract to the low 24 bits lets every adapter expose
+ * identical event semantics. */
+#define WLH_OSAL_EVENT_BITS_MASK UINT32_C(0x00ffffff)
 
 /*
  * OS objects are deliberately opaque.  Adapter implementations may place a
