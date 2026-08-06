@@ -78,6 +78,7 @@ wlh_coproc_result_t wlh_coproc_ethernet_rx_complete(
 ) {
     int index = ethernet_channel_index(channel);
     bool enqueue_wake = false;
+    uint32_t batch_units;
     if (coproc == NULL || units == 0u || index < 0)
         return WLH_COPROC_INVALID_ARGUMENT;
     if (!coproc->worker_started || coproc->config.osal.mutex_lock(
@@ -103,10 +104,16 @@ wlh_coproc_result_t wlh_coproc_ethernet_rx_complete(
        creates one 52-byte CreditUpdate (and one SDIO transaction) per packet,
        which can consume more bus time than the Ethernet data itself. The
        normal worker/heartbeat wake flushes a short tail; a full batch wakes
-       it immediately so at most one negotiated channel window is withheld. */
+       it immediately so at most one negotiated channel window is withheld.
+       The batch must never exceed the peer's in-flight window: with a window
+       smaller than the nominal batch the peer drains its credits and then
+       stalls until the 1 s heartbeat flush, which caps the host->device data
+       rate at initial_credit frames per second. */
+    batch_units = coproc->config.initial_credit;
+    if (batch_units == 0u || batch_units > WLH_ETHERNET_CREDIT_BATCH_UNITS)
+        batch_units = WLH_ETHERNET_CREDIT_BATCH_UNITS;
     if (!coproc->ethernet_rx_wake_queued &&
-        coproc->ethernet_rx_pending_credit[index] >=
-            WLH_ETHERNET_CREDIT_BATCH_UNITS) {
+        coproc->ethernet_rx_pending_credit[index] >= batch_units) {
         coproc->ethernet_rx_wake_queued = true;
         enqueue_wake = true;
     }
@@ -152,6 +159,14 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
 
     if (coproc->rx_sequence_valid[header.channel] &&
         header.sequence != coproc->rx_sequence[header.channel]) {
+        /* Frames the peer sent but that never reached this point still spent
+         * the peer's credits (it charges one per raw record at USB-submit
+         * time). Refund the skipped Ethernet data frames, otherwise every
+         * lost frame permanently leaks one window unit until the channel
+         * strangles. The wrap-safe forward check keeps reordered/duplicate
+         * frames from inflating the window. */
+        uint32_t skipped =
+            header.sequence - coproc->rx_sequence[header.channel];
         ++coproc->diagnostics.sequence_gaps;
         WLH_LOGW(
             "wlh_coproc",
@@ -160,6 +175,12 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
             (unsigned long)coproc->rx_sequence[header.channel],
             (unsigned long)header.sequence
         );
+        if (skipped < 0x80000000u &&
+            (header.channel == WLH_CHANNEL_ETHERNET_STA ||
+             header.channel == WLH_CHANNEL_ETHERNET_AP ||
+             header.channel == WLH_CHANNEL_ETHERNET_ETH)) {
+            (void)send_credit_update(coproc, header.channel, skipped);
+        }
     }
     coproc->rx_sequence[header.channel] = header.sequence + 1u;
     coproc->rx_sequence_valid[header.channel] = true;

@@ -265,7 +265,14 @@ coproc_emit_due_heartbeat(wlh_coproc_t *coproc) {
     }
 
     now = now_ms(coproc);
-    if (coproc->state == WLH_COPROC_STATE_READY &&
+    /* Heartbeats must keep flowing in CONGESTED too: the LINK_CONTROL channel
+     * bypasses credit accounting, and a congested peer is exactly where
+     * liveness evidence matters. Just as important, a stopped heartbeat
+     * stream removes the only always-scheduled IN transfer, so a vanished
+     * host would never trip the transport's IN-timeout reset and the device
+     * would stay CONGESTED forever. */
+    if ((coproc->state == WLH_COPROC_STATE_READY ||
+         coproc->state == WLH_COPROC_STATE_CONGESTED) &&
         now - coproc->last_heartbeat_ms >=
             coproc->config.heartbeat_interval_ms) {
         heartbeat = (wlh_protocol_v1_Heartbeat *)coproc->config.buffers.alloc(
