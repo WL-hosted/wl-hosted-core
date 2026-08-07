@@ -3,6 +3,7 @@
 
 void test_handshake_and_rpc(void);
 void test_timeout_credit_and_session(void);
+void test_control_rpc_credit_refund(void);
 void test_ap_ethernet(void);
 void test_ethernet_aggregated_credit_accounting(void);
 void test_ethernet_tx_aggregation(void);

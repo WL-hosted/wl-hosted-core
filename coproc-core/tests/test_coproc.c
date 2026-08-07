@@ -5,6 +5,7 @@
 
 int main(void) {
     test_hello_wifi_and_ethernet();
+    test_control_rpc_credit_refund();
     test_device_info_and_user_passthrough();
     test_io_adc_kv();
     test_optional_services_not_configured();

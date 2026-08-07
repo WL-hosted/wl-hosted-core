@@ -5,6 +5,7 @@
 int main(void) {
     test_handshake_and_rpc();
     test_timeout_credit_and_session();
+    test_control_rpc_credit_refund();
     test_ap_ethernet();
     test_ethernet_aggregated_credit_accounting();
     test_ethernet_tx_aggregation();

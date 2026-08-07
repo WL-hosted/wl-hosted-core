@@ -38,12 +38,41 @@ int submit_frame(
     void *completion_context
 ) {
     fixture_t *f = context;
-    size_t slot = f->sent_count % 16u;
-    memcpy(f->sent, frame, size);
-    f->sent_size = size;
-    memcpy(f->sent_log[slot], frame, size);
-    f->sent_log_size[slot] = size;
-    ++f->sent_count;
+    bool control_rpc_refund = false;
+    wlh_frame_header_t header;
+    const uint8_t *payload;
+    size_t payload_size;
+    if (wlh_frame_decode(&header, &payload, &payload_size, frame, size, 4096) ==
+            WLH_WIRE_OK &&
+        header.channel == WLH_CHANNEL_LINK_CONTROL) {
+        wlh_rpc_envelope_t rpc;
+        const uint8_t *message;
+        size_t message_size;
+        if (wlh_rpc_decode(
+                &rpc, &message, &message_size, payload, payload_size, 1536
+            ) == WLH_WIRE_OK &&
+            rpc.service_id == WLH_SERVICE_LINK &&
+            rpc.method_id == WLH_LINK_METHOD_CREDIT_UPDATE) {
+            wlh_protocol_v1_CreditUpdate update =
+                wlh_protocol_v1_CreditUpdate_init_zero;
+            pb_istream_t stream = pb_istream_from_buffer(message, message_size);
+            control_rpc_refund =
+                pb_decode(
+                    &stream, wlh_protocol_v1_CreditUpdate_fields, &update
+                ) &&
+                update.channel_id == WLH_CHANNEL_CONTROL_RPC;
+        }
+    }
+    if (control_rpc_refund) {
+        ++f->control_rpc_credit_refunds;
+    } else {
+        size_t slot = f->sent_count % 16u;
+        memcpy(f->sent, frame, size);
+        f->sent_size = size;
+        memcpy(f->sent_log[slot], frame, size);
+        f->sent_log_size[slot] = size;
+        ++f->sent_count;
+    }
     completion(completion_context, frame, size, 0);
     return 0;
 }

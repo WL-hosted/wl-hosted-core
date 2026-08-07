@@ -49,6 +49,11 @@ typedef struct fixture {
     unsigned sent_count;
     uint8_t sent_log[16][4096];
     size_t sent_log_size[16];
+    /* LINK CREDIT_UPDATE refunds for WLH_CHANNEL_CONTROL_RPC are protocol
+     * bookkeeping, not test payload: submit_frame filters them out of the
+     * visible stream and counts them here so dedicated tests can assert the
+     * refund behavior directly. */
+    unsigned control_rpc_credit_refunds;
     int device_info_queries;
     wlh_coproc_device_info_t device_info;
     int device_info_status;

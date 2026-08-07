@@ -2,6 +2,7 @@
 #define WLH_COPROC_TEST_CASES_H
 
 void test_hello_wifi_and_ethernet(void);
+void test_control_rpc_credit_refund(void);
 void test_device_info_and_user_passthrough(void);
 void test_io_adc_kv(void);
 void test_optional_services_not_configured(void);

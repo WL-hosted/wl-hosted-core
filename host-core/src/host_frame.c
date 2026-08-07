@@ -220,6 +220,19 @@ process_frame(wlh_host_t *host, const uint8_t *frame, size_t size) {
     }
     if (header.channel == WLH_CHANNEL_LINK_CONTROL ||
         header.channel == WLH_CHANNEL_CONTROL_RPC) {
+        if (header.channel == WLH_CHANNEL_CONTROL_RPC) {
+            /* The peer charges one credit per RPC frame on this channel, but
+             * unlike the Ethernet channels nothing ever returned them, so the
+             * peer's control-plane allowance (the negotiated initial credit)
+             * drained monotonically over a session. An OTA transfer alone
+             * emits enough progress events to exhaust it; the peer then goes
+             * CONGESTED and drops the next RPC request, which the one-shot
+             * sender cannot retry. Refund the frame here, mirroring the
+             * Ethernet receive refund, so the control plane never drains.
+             * The refund rides the credit-free LINK_CONTROL channel and is
+             * reserved on the send side, so it cannot be blocked. */
+            (void)send_credit_update(host, WLH_CHANNEL_CONTROL_RPC, 1u);
+        }
         wlh_rpc_envelope_t envelope;
         const uint8_t *payload;
         size_t payload_size;

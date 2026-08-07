@@ -501,3 +501,138 @@ void test_hello_wifi_and_ethernet(void) {
     }
     CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
 }
+
+/* The peer refunds one credit per CONTROL_RPC frame it receives. This helper
+ * plays that host role so the core's own send allowance never drains inside
+ * the test. */
+static size_t make_credit_update_event(
+    uint8_t *output, uint32_t session, uint32_t sequence, uint8_t channel
+) {
+    wlh_protocol_v1_CreditUpdate update =
+        wlh_protocol_v1_CreditUpdate_init_zero;
+    uint8_t protobuf[64];
+    uint8_t rpc[128];
+    size_t rpc_size = 0u, frame_size = 0u;
+    pb_ostream_t stream = pb_ostream_from_buffer(protobuf, sizeof(protobuf));
+    wlh_rpc_envelope_t envelope;
+    wlh_frame_header_t header;
+    update.channel_id = channel;
+    update.units = 1u;
+    CHECK(pb_encode(&stream, wlh_protocol_v1_CreditUpdate_fields, &update));
+    memset(&envelope, 0, sizeof(envelope));
+    envelope.service_id = WLH_SERVICE_LINK;
+    envelope.method_id = WLH_LINK_METHOD_CREDIT_UPDATE;
+    envelope.kind = WLH_RPC_KIND_EVENT;
+    CHECK(
+        wlh_rpc_encode(
+            rpc,
+            sizeof(rpc),
+            &rpc_size,
+            &envelope,
+            protobuf,
+            stream.bytes_written
+        ) == WLH_WIRE_OK
+    );
+    wlh_frame_header_init(&header, WLH_CHANNEL_LINK_CONTROL);
+    header.session_id = session;
+    header.sequence = sequence;
+    CHECK(
+        wlh_frame_encode(output, 4096, &frame_size, &header, rpc, rpc_size) ==
+        WLH_WIRE_OK
+    );
+    return frame_size;
+}
+
+void test_control_rpc_credit_refund(void) {
+    fixture_t f;
+    wlh_coproc_t core;
+    wlh_coproc_config_t config;
+    uint8_t incoming[4096];
+    size_t incoming_size;
+    wlh_protocol_v1_HelloRequest hello = wlh_protocol_v1_HelloRequest_init_zero;
+    wlh_rpc_envelope_t rpc;
+    const uint8_t *rpc_payload;
+    size_t rpc_payload_size;
+    unsigned i;
+
+    memset(&f, 0, sizeof(f));
+    memset(&config, 0, sizeof(config));
+    wlh_posix_osal_init(&f.posix);
+    f.core = &core;
+
+    config.port.context = &f;
+    config.port.submit_tx = submit_frame;
+    config.buffers = (wlh_coproc_buffer_ops_t){&f, buffer_alloc, buffer_free};
+    config.osal = wlh_posix_osal_ops(&f.posix);
+    config.max_frame_size = 4096;
+    config.heartbeat_interval_ms = 60000;
+    /* Deliberately tiny control-plane allowance: without the per-frame
+       refund the second response would already drain the channel. */
+    config.initial_credit = 2u;
+    config.initial_session_id = 42;
+    config.core_queue_depth = 8u;
+
+    CHECK(wlh_coproc_init(&core, &config) == WLH_COPROC_OK);
+    CHECK(wlh_coproc_start(&core) == WLH_COPROC_OK);
+    wait_for_state(&core, WLH_COPROC_STATE_WAITING_FOR_HELLO);
+
+    hello.protocol_versions_count = 1;
+    hello.protocol_versions[0].major = 1;
+    hello.max_frame_size = 4096;
+    incoming_size = make_rpc_frame(
+        incoming,
+        0,
+        0,
+        WLH_SERVICE_LINK,
+        WLH_LINK_METHOD_HELLO,
+        7,
+        wlh_protocol_v1_HelloRequest_fields,
+        &hello
+    );
+    CHECK(wlh_coproc_on_frame(&core, incoming, incoming_size) == WLH_COPROC_OK);
+    wait_for_state(&core, WLH_COPROC_STATE_READY);
+    wait_for_sent(&f, 1u);
+
+    /* Six requests against an allowance of two: every request must be
+       refunded one credit and answered, proving the control plane is
+       self-sustaining instead of draining to CONGESTED mid-session (the OTA
+       progress-event burst used to exhaust the allowance and drop the
+       activate RPC). */
+    CHECK(f.control_rpc_credit_refunds == 0u);
+    for (i = 0u; i < 6u; ++i) {
+        wlh_protocol_v1_IoConfigureRequest configure =
+            wlh_protocol_v1_IoConfigureRequest_init_zero;
+        unsigned sent_before = f.sent_count;
+        configure.pin_id = 3u;
+        configure.pull = wlh_protocol_v1_IoPull_IO_PULL_NONE;
+        incoming_size = make_rpc_frame(
+            incoming,
+            42u,
+            (uint16_t)i,
+            WLH_SERVICE_IO,
+            WLH_IO_METHOD_CONFIGURE,
+            100u + i,
+            wlh_protocol_v1_IoConfigureRequest_fields,
+            &configure
+        );
+        CHECK(
+            wlh_coproc_on_frame(&core, incoming, incoming_size) == WLH_COPROC_OK
+        );
+        wait_for_sent(&f, sent_before + 1u);
+        decode_last_sent(&f, &rpc, &rpc_payload, &rpc_payload_size);
+        CHECK(rpc.service_id == WLH_SERVICE_IO);
+        CHECK(rpc.kind == WLH_RPC_KIND_RESPONSE && rpc.request_id == 100u + i);
+        CHECK(
+            rpc.status_domain == WLH_STATUS_DOMAIN_PROTOCOL &&
+            rpc.status_code == WLH_STATUS_NOT_SUPPORTED
+        );
+        incoming_size = make_credit_update_event(
+            incoming, 42u, (uint16_t)(i + 1u), WLH_CHANNEL_CONTROL_RPC
+        );
+        CHECK(
+            wlh_coproc_on_frame(&core, incoming, incoming_size) == WLH_COPROC_OK
+        );
+    }
+    CHECK(f.control_rpc_credit_refunds == 6u);
+    CHECK(wlh_coproc_stop(&core) == WLH_COPROC_OK);
+}

@@ -189,7 +189,21 @@ process_frame(wlh_coproc_t *coproc, const uint8_t *frame, size_t size) {
 
     if (header.channel == WLH_CHANNEL_LINK_CONTROL ||
         header.channel == WLH_CHANNEL_CONTROL_RPC) {
-        return handle_rpc(coproc, &header, payload, payload_size);
+        wlh_coproc_result_t result =
+            handle_rpc(coproc, &header, payload, payload_size);
+        if (header.channel == WLH_CHANNEL_CONTROL_RPC) {
+            /* The peer charges one credit per RPC frame on this channel, but
+             * unlike the Ethernet channels nothing ever returned them, so a
+             * session's control-plane allowance (the negotiated initial
+             * credit) drained monotonically; an OTA transfer alone emits
+             * enough progress events to exhaust it, CONGESTED drops the next
+             * RPC request, and the one-shot peer times out. Refund the frame
+             * here, like Ethernet receive does, so the control plane never
+             * drains. The refund itself rides the credit-free LINK_CONTROL
+             * channel, so it can always be delivered. */
+            (void)send_credit_update(coproc, WLH_CHANNEL_CONTROL_RPC, 1u);
+        }
+        return result;
     }
 
     if (header.channel == WLH_CHANNEL_BLUETOOTH_HCI) {
